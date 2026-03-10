@@ -14,7 +14,11 @@ const seedAdmin = async () => {
             name: 'Super Admin',
             email: 'admin@petluri.com',
             password: 'Admin@123', // Will be hashed by pre-save hook
-            role: 'admin'
+            role: 'admin',
+            phone: '9999999999',
+            collegeName: 'Petluri Admin Office',
+            collegeDetails: 'Administration',
+            personalAddress: 'Hyderabad, India'
         });
 
         console.log('Admin User Created Successfully:', adminUser.email);

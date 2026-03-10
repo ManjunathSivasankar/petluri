@@ -9,7 +9,7 @@ const Certificate = require('../models/Certificate');
 const getDashboard = async (req, res) => {
     try {
         const enrollments = await Enrollment.find({ userId: req.user._id })
-            .populate('courseId', 'title duration level type')
+            .populate('courseId', 'title description duration level type image')
             .sort({ enrolledAt: -1 });
 
         const dashboardData = {
@@ -18,9 +18,12 @@ const getDashboard = async (req, res) => {
                 email: req.user.email
             },
             enrolledCourses: enrollments.map(enrollment => ({
-                courseId: enrollment.courseId._id,
+                _id: enrollment.courseId._id,
                 title: enrollment.courseId.title,
+                description: enrollment.courseId.description,
+                duration: enrollment.courseId.duration,
                 level: enrollment.courseId.level,
+                image: enrollment.courseId.image,
                 progress: enrollment.completionPercentage,
                 status: enrollment.status,
                 certificateIssued: enrollment.certificateIssued
@@ -45,7 +48,15 @@ const getMyCourses = async (req, res) => {
     try {
         const enrollments = await Enrollment.find({ userId: req.user._id })
             .populate('courseId');
-        res.json(enrollments);
+
+        const courses = enrollments.map(enrollment => ({
+            ...enrollment.courseId._doc,
+            progress: enrollment.completionPercentage,
+            status: enrollment.status,
+            enrolledAt: enrollment.enrolledAt
+        }));
+
+        res.json(courses);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -111,6 +122,11 @@ const completeVideo = async (req, res) => {
 
         if (enrollment.completionPercentage === 100) {
             enrollment.status = 'completed';
+
+            // Issue Certificate
+            const { issueCertificate } = require('../services/certificateService');
+            await issueCertificate(req.user._id, courseId);
+            enrollment.certificateIssued = true;
         }
 
         await enrollment.save();

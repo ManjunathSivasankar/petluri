@@ -17,7 +17,8 @@ const {
     uploadVideo,
     deleteCourse,
     getStudentCredentials,
-    resendStudentCredentials
+    resendStudentCredentials,
+    deleteStudent
 } = require('../controllers/adminController');
 const { protect } = require('../middlewares/authMiddleware');
 const { adminOnly } = require('../middlewares/roleMiddleware');
@@ -34,6 +35,7 @@ router.get('/courses', getAllCourses);
 
 router.get('/students', getAllStudents);
 router.post('/create-student', createStudent);
+router.delete('/students/:id', deleteStudent);
 router.post('/enroll-student', enrollStudent);
 router.get('/enrollments', getAllEnrollments);
 router.post('/enrollments/:id/credentials', getStudentCredentials);

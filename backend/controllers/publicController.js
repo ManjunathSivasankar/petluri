@@ -31,4 +31,31 @@ const getSingleCourse = async (req, res) => {
     }
 };
 
-module.exports = { getPublicCourses, getSingleCourse };
+const Certificate = require('../models/Certificate');
+
+// @desc    Verify a certificate
+// @route   GET /api/courses/verify/:certificateId
+// @access  Public
+const verifyCertificate = async (req, res) => {
+    try {
+        const certificate = await Certificate.findOne({ certificateId: req.params.certificateId })
+            .populate('userId', 'name')
+            .populate('courseId', 'title duration');
+
+        if (!certificate) {
+            return res.status(404).json({ message: 'Certificate not found or invalid' });
+        }
+
+        res.json({
+            valid: true,
+            studentName: certificate.userId.name,
+            courseTitle: certificate.courseId.title,
+            issueDate: certificate.generatedDate,
+            pdfUrl: certificate.pdfUrl
+        });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+module.exports = { getPublicCourses, getSingleCourse, verifyCertificate };
