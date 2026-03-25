@@ -23,7 +23,10 @@ const certificateSchema = new mongoose.Schema({
     pdfUrl: {
         type: String,
         required: true
-    }
+    },
+    studentName: String,
+    courseTitle: String,
+    verificationUrl: String
 });
 
 module.exports = mongoose.model('Certificate', certificateSchema);

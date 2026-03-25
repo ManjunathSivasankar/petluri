@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/Input';
 import { TextArea } from '@/components/ui/TextArea';
 import { Icon } from '@/components/ui/Icon';
 import { Label } from '@/components/ui/Label';
+import { Badge } from '@/components/ui/Badge';
 import api from '@/lib/api';
 import ModuleEditor from '@/components/admin/ModuleEditor';
 import ProgramValidator from '@/components/admin/ProgramValidator';
@@ -28,7 +29,12 @@ const ProgramWizard = () => {
         programCode: '', // READ ONLY
         image: '', // Course Banner URL
         certificateTemplate: '', // Certificate Background URL
-        modules: [{ title: 'Introduction', content: [] }], // Default module
+        internshipTemplate: '', // Internship Template URL (legacy)
+        internshipOfferTemplate: '', // Internship Offer Letter Template URL
+        internshipCertificateTemplate: '', // Internship Completion Certificate Template URL
+        startDate: '', // Internship start date
+        endDate: '',   // Internship end date
+        modules: [{ title: 'Introduction', description: '', content: [] }], // Default module
         status: 'draft' // Default status
     });
 
@@ -56,6 +62,11 @@ const ProgramWizard = () => {
                     programCode: course.programCode || '',
                     image: course.image || '',
                     certificateTemplate: course.certificateTemplate || '',
+                    internshipTemplate: course.internshipTemplate || '',
+                    internshipOfferTemplate: course.internshipOfferTemplate || '',
+                    internshipCertificateTemplate: course.internshipCertificateTemplate || '',
+                    startDate: course.startDate ? course.startDate.split('T')[0] : '',
+                    endDate: course.endDate ? course.endDate.split('T')[0] : '',
                     modules: course.modules || [],
                     status: course.status || (course.isPublished ? 'published' : 'draft') // fallback for legacy
                 });
@@ -103,12 +114,14 @@ const ProgramWizard = () => {
         if (!file) return;
 
         try {
-            // Use the mock upload endpoint
-            const data = { filename: file.name, type: 'image' };
-            const response = await api.post('/admin/upload-video', data);
+            const formData = new FormData();
+            formData.append('file', file);
+            
+            const response = await api.post('/admin/upload-image', formData);
             setFormData(prev => ({ ...prev, image: response.data.url }));
         } catch (error) {
             console.error("Image upload failed", error);
+            alert("Failed to upload image.");
         }
     };
 
@@ -238,10 +251,23 @@ const ProgramWizard = () => {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div className="space-y-2">
-                    <Label htmlFor="duration">Duration <span className="text-red-500">*</span></Label>
-                    <Input id="duration" name="duration" value={formData.duration} onChange={handleChange} placeholder="e.g., 40 Hours" />
-                </div>
+                {formData.type === 'internship' ? (
+                    <>
+                        <div className="space-y-2">
+                            <Label htmlFor="startDate">Internship Start Date <span className="text-red-500">*</span></Label>
+                            <Input id="startDate" name="startDate" type="date" value={formData.startDate} onChange={handleChange} />
+                        </div>
+                        <div className="space-y-2">
+                            <Label htmlFor="endDate">Internship End Date <span className="text-red-500">*</span></Label>
+                            <Input id="endDate" name="endDate" type="date" value={formData.endDate} onChange={handleChange} />
+                        </div>
+                    </>
+                ) : (
+                    <div className="space-y-2">
+                        <Label htmlFor="duration">Duration <span className="text-red-500">*</span></Label>
+                        <Input id="duration" name="duration" value={formData.duration} onChange={handleChange} placeholder="e.g., 40 Hours" />
+                    </div>
+                )}
                 <div className="space-y-2">
                     <Label htmlFor="price">Price (₹) {formData.type !== 'free' && <span className="text-red-500">*</span>}</Label>
                     <Input
@@ -277,19 +303,72 @@ const ProgramWizard = () => {
         const file = e.target.files[0];
         if (!file) return;
 
+        // Enforce PDF only
+        if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
+            alert('Only PDF files are allowed for certificate templates. Please upload a PDF.');
+            e.target.value = '';
+            return;
+        }
+
         try {
-            // Re-use the existing upload endpoint for simplicity as requested
-            const data = { filename: file.name, type: 'image' };
-            const response = await api.post('/admin/upload-video', data);
+            const formData = new FormData();
+            formData.append('file', file);
+
+            // Use the dedicated PDF-only template upload endpoint
+            const response = await api.post('/admin/upload-template', formData);
             setFormData(prev => ({ ...prev, certificateTemplate: response.data.url }));
         } catch (error) {
             console.error("Certificate upload failed", error);
-            alert("Failed to upload certificate image.");
+            alert(error.response?.data?.message || 'Failed to upload certificate template.');
         }
     };
+    const handleInternshipOfferUpload = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
 
+        if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
+            alert('Only PDF files are allowed for internship templates. Please upload a PDF.');
+            e.target.value = '';
+            return;
+        }
+
+        try {
+            const formData = new FormData();
+            formData.append('file', file);
+
+            const response = await api.post('/admin/upload-template', formData);
+            setFormData(prev => ({ ...prev, internshipOfferTemplate: response.data.url }));
+        } catch (error) {
+            console.error("Internship offer upload failed", error);
+            alert(error.response?.data?.message || 'Failed to upload internship offer template.');
+        }
+    };
+    const handleInternshipTemplateUpload = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
+            alert('Only PDF files are allowed for internship templates. Please upload a PDF.');
+            e.target.value = '';
+            return;
+        }
+
+        try {
+            const formData = new FormData();
+            formData.append('file', file);
+
+            const response = await api.post('/admin/upload-template', formData);
+            setFormData(prev => ({ ...prev, internshipCertificateTemplate: response.data.url }));
+        } catch (error) {
+            console.error("Internship template upload failed", error);
+            alert(error.response?.data?.message || 'Failed to upload internship template.');
+        }
+    };
     const renderStep3 = () => (
         <div className="space-y-6">
+
+            {/* Generic Completion Certificate - only for non-internship programs */}
+            {formData.type !== 'internship' && (
             <div className="border rounded-lg p-6 bg-slate-50 space-y-4">
                 <div className="flex items-center gap-3 mb-2">
                     <div className="bg-yellow-100 p-2 rounded text-yellow-700">
@@ -308,9 +387,10 @@ const ProgramWizard = () => {
                             id="certificate"
                             type="file"
                             onChange={handleCertificateUpload}
-                            accept="image/*"
+                            accept="application/pdf,.pdf"
                             className="max-w-md"
                         />
+                        <p className="text-xs text-slate-500 mt-1">Upload a fillable PDF with form fields: student_name, course_name, completion_date, certificate_id</p>
                         {formData.certificateTemplate && (
                             <div className="relative w-full max-w-md aspect-[1.414/1] rounded overflow-hidden border border-slate-200 shadow-sm">
                                 <img src={formData.certificateTemplate} alt="Certificate Preview" className="h-full w-full object-contain bg-white" />
@@ -327,28 +407,81 @@ const ProgramWizard = () => {
                     </div>
                 </div>
             </div>
+            )}
 
+            {/* Internship Templates - only for internship programs */}
             {formData.type === 'internship' && (
-                <div className="border rounded-lg p-6 bg-slate-50 space-y-4">
-                    <div className="flex items-center gap-3 mb-2">
-                        <div className="bg-blue-100 p-2 rounded text-blue-700">
-                            <Icon name="FileText" size={24} />
+                <>
+                    {/* Internship Offer Letter */}
+                    <div className="border rounded-lg p-6 bg-blue-50 space-y-4">
+                        <div className="flex items-center gap-3 mb-2">
+                            <div className="bg-blue-100 p-2 rounded text-blue-700">
+                                <Icon name="FileText" size={24} />
+                            </div>
+                            <div>
+                                <h3 className="font-semibold text-slate-800">Internship Offer Letter Template</h3>
+                                <p className="text-xs text-slate-500">Generated automatically when a student enrolls/pays for this internship.</p>
+                            </div>
                         </div>
-                        <div>
-                            <h3 className="font-semibold text-slate-800">Offer Letter</h3>
-                            <p className="text-xs text-slate-500">Sent automatically upon enrollment for internships</p>
+
+                        <div className="space-y-2">
+                            <Label htmlFor="internship-offer-template">Offer Letter PDF Template</Label>
+                            <div className="flex flex-col gap-4">
+                                <Input
+                                    id="internship-offer-template"
+                                    type="file"
+                                    onChange={handleInternshipOfferUpload}
+                                    accept="application/pdf,.pdf"
+                                    className="max-w-md"
+                                />
+                                <p className="text-xs text-slate-500 mt-1">Fillable PDF with placeholders: <code>student_name</code>, <code>offer_id</code>, <code>year&amp;dept</code>, <code>college_name</code></p>
+                                {formData.internshipOfferTemplate && (
+                                    <div className="p-3 bg-white border rounded border-blue-100 flex items-center justify-between">
+                                        <div className="truncate flex-1 font-mono text-xs text-blue-600">
+                                            {formData.internshipOfferTemplate.split('/').pop()}
+                                        </div>
+                                        <Badge variant="success">Uploaded</Badge>
+                                    </div>
+                                )}
+                            </div>
                         </div>
                     </div>
 
-                    <Label>Offer Letter Template</Label>
-                    <select
-                        className="flex h-10 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1"
-                    >
-                        <option value="">Select Template</option>
-                        <option value="std_intern">Standard Internship Offer</option>
-                        <option value="se_intern">Software Engineering Intern</option>
-                    </select>
-                </div>
+                    {/* Internship Completion Certificate */}
+                    <div className="border rounded-lg p-6 bg-slate-50 space-y-4">
+                        <div className="flex items-center gap-3 mb-2">
+                            <div className="bg-yellow-100 p-2 rounded text-yellow-700">
+                                <Icon name="Award" size={24} />
+                            </div>
+                            <div>
+                                <h3 className="font-semibold text-slate-800">Internship Completion Certificate Template</h3>
+                                <p className="text-xs text-slate-500">Generated when enrollment is marked as "Completed" in the admin panel.</p>
+                            </div>
+                        </div>
+
+                        <div className="space-y-2">
+                            <Label htmlFor="internship-certificate-template">Completion Certificate PDF Template</Label>
+                            <div className="flex flex-col gap-4">
+                                <Input
+                                    id="internship-certificate-template"
+                                    type="file"
+                                    onChange={handleInternshipTemplateUpload}
+                                    accept="application/pdf,.pdf"
+                                    className="max-w-md"
+                                />
+                                <p className="text-xs text-slate-500 mt-1">Fillable PDF with placeholders: <code>student_name</code>, <code>college_name</code>, <code>student_id</code></p>
+                                {formData.internshipCertificateTemplate && (
+                                    <div className="p-3 bg-white border rounded border-yellow-100 flex items-center justify-between">
+                                        <div className="truncate flex-1 font-mono text-xs text-yellow-600">
+                                            {formData.internshipCertificateTemplate.split('/').pop()}
+                                        </div>
+                                        <Badge variant="success">Uploaded</Badge>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                </>
             )}
         </div>
     );

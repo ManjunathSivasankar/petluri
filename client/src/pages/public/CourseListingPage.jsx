@@ -91,12 +91,6 @@ const CourseListingPage = ({ title, subtitle, type = 'professional' }) => {
 
     return (
         <div className="py-8 bg-slate-50 min-h-screen">
-            {/* Debug Button */}
-            <div className="fixed bottom-4 right-4 z-50">
-                <Button onClick={() => window.location.reload()} variant="outline" size="sm" className="bg-white shadow">
-                    Force Reload
-                </Button>
-            </div>
             <div className="container mx-auto px-4">
 
                 {/* New Page Hero */}

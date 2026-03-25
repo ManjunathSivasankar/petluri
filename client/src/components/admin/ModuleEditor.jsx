@@ -33,7 +33,7 @@ const ModuleEditor = ({ modules = [], setModules, quizzes = [], onQuizCreated })
     };
 
     const addModule = () => {
-        setModules([...modules, { title: 'New Module', content: [] }]);
+        setModules([...modules, { title: 'New Module', description: '', content: [] }]);
     };
 
     const updateModuleTitle = (index, title) => {
@@ -56,6 +56,11 @@ const ModuleEditor = ({ modules = [], setModules, quizzes = [], onQuizCreated })
     const addContent = (moduleIndex, type) => {
         const newModules = [...modules];
         if (type === 'video') {
+            const hasVideo = newModules[moduleIndex].content.some(item => item.type === 'video');
+            if (hasVideo) {
+                alert('Each module can contain only one video. Replace the existing one if needed.');
+                return;
+            }
             newModules[moduleIndex].content.push({
                 type: 'video',
                 title: 'New Video',
@@ -80,8 +85,15 @@ const ModuleEditor = ({ modules = [], setModules, quizzes = [], onQuizCreated })
     };
 
     const handleVideoUpload = async (moduleIndex, contentIndex, file) => {
+        if (!file) {
+            console.error('No video file selected');
+            return;
+        }
+
         try {
-            const formData = { filename: file.name, type: 'video' };
+            const formData = new FormData();
+            formData.append('video', file);
+
             const response = await api.post('/admin/upload-video', formData);
 
             const newModules = [...modules];
@@ -90,7 +102,7 @@ const ModuleEditor = ({ modules = [], setModules, quizzes = [], onQuizCreated })
             newModules[moduleIndex].content[contentIndex].duration = "10:00";
             setModules(newModules);
         } catch (error) {
-            console.error("Upload failed", error);
+            console.error("Upload failed", error.response?.data || error.message);
         }
     };
 
@@ -301,6 +313,7 @@ const ModuleEditor = ({ modules = [], setModules, quizzes = [], onQuizCreated })
                                     variant="outline"
                                     size="sm"
                                     onClick={() => addContent(mIndex, 'video')}
+                                    disabled={module.content.some(item => item.type === 'video')}
                                     className="text-xs h-8"
                                 >
                                     <Icon name="Plus" size={14} className="mr-1" /> Add Video

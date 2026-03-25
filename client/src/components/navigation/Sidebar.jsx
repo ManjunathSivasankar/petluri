@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/Button';
 
 import { useAuth } from '@/context/AuthContext';
 
-const Sidebar = ({ menuItems, title, titleSub, logoHref = "/" }) => {
+const Sidebar = ({ menuItems, title, titleSub, logoHref = "/", isOpen = false, onClose }) => {
     const { logout } = useAuth();
 
     const handleLogout = () => {
@@ -16,7 +16,19 @@ const Sidebar = ({ menuItems, title, titleSub, logoHref = "/" }) => {
     };
 
     return (
-        <div className="h-screen w-64 bg-white border-r border-slate-200 flex flex-col fixed left-0 top-0 z-40">
+        <>
+            {/* Backdrop for mobile */}
+            {isOpen && (
+                <div 
+                    className="fixed inset-0 bg-slate-900/50 z-40 md:hidden animate-in fade-in duration-200"
+                    onClick={onClose}
+                />
+            )}
+
+            <div className={cn(
+                "h-screen w-64 bg-white border-r border-slate-200 flex flex-col fixed left-0 top-0 z-50 transition-transform duration-300 ease-in-out md:translate-x-0",
+                isOpen ? "translate-x-0" : "-translate-x-full"
+            )}>
             {/* Sidebar Header */}
             <div className="h-20 flex items-center justify-center px-4 border-b border-slate-100">
                 <Link to={logoHref} className="flex items-center justify-center w-full h-full">
@@ -65,6 +77,7 @@ const Sidebar = ({ menuItems, title, titleSub, logoHref = "/" }) => {
                 </Button>
             </div>
         </div>
+    </>
     );
 };
 

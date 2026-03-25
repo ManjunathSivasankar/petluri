@@ -5,8 +5,14 @@ const {
     getMyCourses,
     getCourseDetails,
     completeVideo,
+    updateVideoProgress,
     submitQuiz,
-    getCertificates
+    getProgressSummary,
+    submitCourseFeedback,
+    getMyCertificates,
+    downloadCertificate,
+    getMyInternshipDocuments,
+    downloadInternshipCertificate
 } = require('../controllers/studentController');
 const { protect } = require('../middlewares/authMiddleware');
 const { studentOnly } = require('../middlewares/roleMiddleware');
@@ -17,10 +23,16 @@ router.use(studentOnly);
 
 router.get('/dashboard', getDashboard);
 router.get('/courses', getMyCourses);
-router.get('/certificates', getCertificates);
+router.get('/certificates', getMyCertificates);
+router.get('/certificates/:id/download', downloadCertificate);
+router.get('/internship-documents', getMyInternshipDocuments);
+router.get('/internship-certificates/:id/download', downloadInternshipCertificate);
+router.get('/progress/:courseId', getProgressSummary);
+router.post('/feedback/submit', submitCourseFeedback);
 
 // Course Specific Protected Routes
 router.get('/course/:id', courseAccess, getCourseDetails);
+router.post('/video/progress', courseAccess, updateVideoProgress);
 router.post('/video/complete', courseAccess, completeVideo);
 router.post('/quiz/submit', courseAccess, submitQuiz);
 

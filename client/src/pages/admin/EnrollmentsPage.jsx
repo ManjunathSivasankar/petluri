@@ -12,7 +12,11 @@ const EnrollmentsPage = () => {
     const [searchTerm, setSearchTerm] = useState('');
     const [selectedRows, setSelectedRows] = useState([]);
     const [enrollments, setEnrollments] = useState([]);
+    const [courses, setCourses] = useState([]);
+    const [selectedCourseId, setSelectedCourseId] = useState('all');
     const [loading, setLoading] = useState(true);
+    const [loadingDetails, setLoadingDetails] = useState(false);
+    const [selectedEnrollmentDetails, setSelectedEnrollmentDetails] = useState(null);
     const [credentialsModal, setCredentialsModal] = useState({
         isOpen: false,
         studentId: null,
@@ -22,8 +26,12 @@ const EnrollmentsPage = () => {
     useEffect(() => {
         const fetchEnrollments = async () => {
             try {
-                const response = await api.get('/admin/enrollments');
-                setEnrollments(response.data || []);
+                const [enrollmentRes, courseRes] = await Promise.all([
+                    api.get('/admin/enrollments'),
+                    api.get('/admin/courses')
+                ]);
+                setEnrollments(enrollmentRes.data || []);
+                setCourses(courseRes.data || []);
             } catch (error) {
                 console.error("Failed to fetch enrollments:", error);
             } finally {
@@ -57,6 +65,60 @@ const EnrollmentsPage = () => {
         });
     };
 
+    const handleStatusChange = async (enrollmentId, newStatus) => {
+        const confirmMsg = newStatus === 'completed' 
+            ? 'Mark this course as completed and issue certificate?' 
+            : `Change status to ${newStatus}?`;
+            
+        if (!window.confirm(confirmMsg)) return;
+        try {
+            await api.put(`/admin/enrollments/${enrollmentId}/status`, { status: newStatus });
+            // Refresh list
+            const response = await api.get('/admin/enrollments');
+            setEnrollments(response.data || []);
+        } catch (error) {
+            console.error("Failed to update status:", error);
+            alert('Failed to update status');
+        }
+    };
+
+    const handleViewMonitoring = async (enrollmentId) => {
+        try {
+            setLoadingDetails(true);
+            const { data } = await api.get(`/admin/enrollments/${enrollmentId}/details`);
+            setSelectedEnrollmentDetails(data);
+        } catch (error) {
+            console.error('Failed to fetch enrollment details:', error);
+            alert('Unable to load detailed progress view');
+        } finally {
+            setLoadingDetails(false);
+        }
+    };
+
+    const handleExportExcel = async () => {
+        if (!selectedCourseId || selectedCourseId === 'all') {
+            alert('Please select a specific course to export.');
+            return;
+        }
+
+        try {
+            const response = await api.get(`/admin/enrollments/export/${selectedCourseId}`, {
+                responseType: 'blob'
+            });
+            const url = window.URL.createObjectURL(new Blob([response.data]));
+            const link = document.createElement('a');
+            link.href = url;
+            link.setAttribute('download', `course-enrollments-${selectedCourseId}.xlsx`);
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            window.URL.revokeObjectURL(url);
+        } catch (error) {
+            console.error('Export failed:', error);
+            alert('Failed to export enrollments');
+        }
+    };
+
     const copyTableData = () => {
         // Implement copy logic based on displayed data
         alert('Table data copied to clipboard!');
@@ -64,8 +126,9 @@ const EnrollmentsPage = () => {
 
     // Filter logic (simple client-side for now)
     const filteredEnrollments = enrollments.filter(enr =>
-        (enr.userId?.name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
-        (enr.userId?.email || '').toLowerCase().includes(searchTerm.toLowerCase())
+        ((enr.userId?.name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (enr.userId?.email || '').toLowerCase().includes(searchTerm.toLowerCase())) &&
+        (selectedCourseId === 'all' || enr.courseId?._id === selectedCourseId)
     );
 
     return (
@@ -80,9 +143,9 @@ const EnrollmentsPage = () => {
                         <Icon name="Copy" size={16} className="mr-2" />
                         Copy Data
                     </Button>
-                    <Button>
+                    <Button onClick={handleExportExcel}>
                         <Icon name="Download" size={16} className="mr-2" />
-                        Export CSV
+                        Export Excel
                     </Button>
                 </div>
             </div>
@@ -98,17 +161,11 @@ const EnrollmentsPage = () => {
                         onChange={(e) => setSearchTerm(e.target.value)}
                     />
                 </div>
-                <Select className="w-full md:w-48">
-                    <option>Status: All</option>
-                    <option>Captured</option>
-                    <option>Pending</option>
-                    <option>Failed</option>
-                </Select>
-                <Select className="w-full md:w-48">
-                    <option>Type: All</option>
-                    <option>Internship</option>
-                    <option>Professional</option>
-                    <option>Certification</option>
+                <Select className="w-full md:w-72" value={selectedCourseId} onChange={(e) => setSelectedCourseId(e.target.value)}>
+                    <option value="all">Course: All</option>
+                    {courses.map(course => (
+                        <option key={course._id} value={course._id}>{course.title}</option>
+                    ))}
                 </Select>
             </div>
 
@@ -130,18 +187,21 @@ const EnrollmentsPage = () => {
                                 <th className="p-4 min-w-[120px]">Type</th>
                                 <th className="p-4">Amount</th>
                                 <th className="p-4">Status</th>
+                                <th className="p-4">Progress</th>
+                                <th className="p-4">Completion</th>
+                                <th className="p-4">Feedback</th>
                                 <th className="p-4 min-w-[100px]">Date</th>
-                                <th className="p-4 min-w-[150px] text-right">Actions</th>
+                                <th className="p-4 min-w-[220px] text-right">Actions</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
                             {loading ? (
                                 <tr>
-                                    <td colSpan={12} className="text-center py-8 text-slate-500">Loading enrollments...</td>
+                                    <td colSpan={15} className="text-center py-8 text-slate-500">Loading enrollments...</td>
                                 </tr>
                             ) : filteredEnrollments.length === 0 ? (
                                 <tr>
-                                    <td colSpan={12} className="text-center py-8 text-slate-500">No enrollments found.</td>
+                                    <td colSpan={15} className="text-center py-8 text-slate-500">No enrollments found.</td>
                                 </tr>
                             ) : (
                                 filteredEnrollments.map((row) => {
@@ -183,19 +243,38 @@ const EnrollmentsPage = () => {
                                             </td>
                                             <td className="p-4 font-medium text-slate-900">{amountStr}</td>
                                             <td className="p-4">
+                                                <select
+                                                    className={cn(
+                                                        "inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium capitalize border-none focus:ring-2 focus:ring-blue-500 cursor-pointer appearance-none",
+                                                        row.status === 'completed' ? "bg-green-100 text-green-800" :
+                                                            row.status === 'pending' ? "bg-yellow-100 text-yellow-800" :
+                                                                row.status === 'enrolled' ? "bg-blue-100 text-blue-800" :
+                                                                    "bg-slate-100 text-slate-800"
+                                                    )}
+                                                    value={row.status || 'enrolled'}
+                                                    onChange={(e) => handleStatusChange(row._id, e.target.value)}
+                                                >
+                                                    <option value="enrolled">Enrolled</option>
+                                                    <option value="pending">Pending</option>
+                                                    <option value="completed">Completed</option>
+                                                </select>
+                                            </td>
+                                            <td className="p-4 font-semibold text-slate-700">{row.completionPercentage || 0}%</td>
+                                            <td className="p-4">
                                                 <span className={cn(
-                                                    "inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium capitalize",
-                                                    statusStr === 'Paid' ? "bg-green-100 text-green-800" :
-                                                        statusStr === 'Pending Payment' ? "bg-yellow-100 text-yellow-800" :
-                                                            statusStr === 'active' ? "bg-blue-100 text-blue-800" :
-                                                                "bg-slate-100 text-slate-800"
+                                                    "inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold",
+                                                    row.status === 'completed' ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-700'
                                                 )}>
-                                                    {statusStr}
+                                                    {row.status === 'completed' ? 'Completed' : 'Not Completed'}
                                                 </span>
+                                            </td>
+                                            <td className="p-4 text-xs">
+                                                {row.feedback?.submitted ? `Submitted (${row.feedback?.rating || '-'}/5)` : 'Pending'}
                                             </td>
                                             <td className="p-4 text-slate-600">{dateDisplay}</td>
                                             <td className="p-4 text-right">
                                                 <div className="flex items-center justify-end gap-2">
+                                                    {/* Row specific complete button removed in favor of status dropdown */}
                                                     <Button
                                                         size="sm"
                                                         variant="ghost"
@@ -204,6 +283,15 @@ const EnrollmentsPage = () => {
                                                     >
                                                         <Icon name="Key" size={14} className="mr-1" />
                                                         Credentials
+                                                    </Button>
+                                                    <Button
+                                                        size="sm"
+                                                        variant="outline"
+                                                        className="text-xs h-8"
+                                                        onClick={() => handleViewMonitoring(row._id)}
+                                                    >
+                                                        <Icon name="BarChart3" size={14} className="mr-1" />
+                                                        Monitor
                                                     </Button>
                                                 </div>
                                             </td>
@@ -224,6 +312,61 @@ const EnrollmentsPage = () => {
                     </div>
                 </div>
             </div>
+
+            {selectedEnrollmentDetails && (
+                <div className="bg-white border border-slate-200 rounded-lg shadow-sm p-5">
+                    <div className="flex items-center justify-between mb-4">
+                        <div>
+                            <h2 className="text-lg font-bold text-slate-900">Enrollment Monitoring Details</h2>
+                            <p className="text-sm text-slate-500">
+                                {selectedEnrollmentDetails.student?.name} ({selectedEnrollmentDetails.student?.email})
+                            </p>
+                        </div>
+                        {loadingDetails && <span className="text-xs text-slate-500">Loading...</span>}
+                    </div>
+
+                    <div className="grid md:grid-cols-2 gap-4 mb-4">
+                        <div className="rounded-md border border-slate-200 p-3">
+                            <p className="text-xs text-slate-500">Selected Course</p>
+                            <p className="font-semibold text-slate-900">{selectedEnrollmentDetails.selectedEnrollment?.courseId?.title}</p>
+                            <p className="text-sm text-slate-600 mt-1">Progress: {selectedEnrollmentDetails.selectedEnrollment?.completionPercentage || 0}%</p>
+                            <p className="text-sm text-slate-600">Status: {selectedEnrollmentDetails.selectedEnrollment?.status}</p>
+                        </div>
+                        <div className="rounded-md border border-slate-200 p-3">
+                            <p className="text-xs text-slate-500">Quiz Tracking</p>
+                            <p className="text-sm text-slate-700">Attempts: {selectedEnrollmentDetails.selectedEnrollment?.quizTracking?.totalAttempts || 0}</p>
+                            <p className="text-sm text-green-700">Passed: {selectedEnrollmentDetails.selectedEnrollment?.quizTracking?.passed || 0}</p>
+                            <p className="text-sm text-red-700">Failed: {selectedEnrollmentDetails.selectedEnrollment?.quizTracking?.failed || 0}</p>
+                        </div>
+                    </div>
+
+                    <h3 className="text-sm font-semibold text-slate-800 mb-2">All Courses Taken By Student</h3>
+                    <div className="overflow-x-auto border border-slate-100 rounded-md">
+                        <table className="w-full text-sm">
+                            <thead className="bg-slate-50 text-slate-500 text-xs uppercase">
+                                <tr>
+                                    <th className="p-3 text-left">Course</th>
+                                    <th className="p-3 text-left">Type</th>
+                                    <th className="p-3 text-left">Progress</th>
+                                    <th className="p-3 text-left">Status</th>
+                                    <th className="p-3 text-left">Completion</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {(selectedEnrollmentDetails.studentCourseProgress || []).map(item => (
+                                    <tr key={item.enrollmentId} className="border-t border-slate-100">
+                                        <td className="p-3 font-medium text-slate-800">{item.courseTitle}</td>
+                                        <td className="p-3 text-slate-600">{item.courseType}</td>
+                                        <td className="p-3 text-slate-700">{item.completionPercentage}%</td>
+                                        <td className="p-3 text-slate-700">{item.status}</td>
+                                        <td className="p-3 text-slate-700">{item.completionStatus}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            )}
 
             <CredentialsModal
                 isOpen={credentialsModal.isOpen}

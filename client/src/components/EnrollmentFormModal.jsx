@@ -146,7 +146,8 @@ const EnrollmentFormModal = ({ isOpen, onClose, course, initialUser = null }) =>
 
         } catch (error) {
             console.error("Enrollment error", error);
-            setError(error.message || "An unexpected error occurred.");
+            const serverError = error.response?.data?.error || error.response?.data?.message || error.message;
+            setError(serverError || "An unexpected error occurred.");
         } finally {
             setEnrolling(false);
         }
@@ -190,7 +191,7 @@ const EnrollmentFormModal = ({ isOpen, onClose, course, initialUser = null }) =>
                                     required
                                     className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                                     placeholder="your.email@example.com"
-                                    disabled={loadingEmailCheck || initialUser}
+                                    disabled={loadingEmailCheck}
                                 />
                                 {loadingEmailCheck && (
                                     <Loader2 className="absolute right-3 top-2.5 h-5 w-5 animate-spin text-blue-500" />

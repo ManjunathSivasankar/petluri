@@ -3,8 +3,57 @@ const User = require('../models/User');
 const Enrollment = require('../models/Enrollment');
 const Quiz = require('../models/Quiz');
 const Payment = require('../models/Payment');
+const Certificate = require('../models/Certificate');
+const InternshipOffer = require('../models/InternshipOffer');
+const InternshipCertificate = require('../models/InternshipCertificate');
 const sendEmail = require('../services/emailService');
+const { issueCertificate } = require('../services/certificateService');
+const { issueInternshipOffer, issueInternshipCertificate } = require('../services/internshipDocumentService');
+const { uploadVideoFile, deleteVideoFile } = require('../services/videoStorageService');
 const crypto = require('crypto'); // For random password
+const ExcelJS = require('exceljs');
+const fs = require('fs');
+const path = require('path');
+
+const inferLocalVideoSize = (url = '') => {
+    if (!url || !url.startsWith('/uploads/')) return 0;
+    const localPath = path.join(__dirname, '..', 'public', url.replace(/^\//, ''));
+    if (!fs.existsSync(localPath)) return 0;
+    try {
+        return fs.statSync(localPath).size || 0;
+    } catch {
+        return 0;
+    }
+};
+
+const getQuizTrackingSummary = (enrollment) => {
+    const attempts = enrollment.progress?.quizAttempts || [];
+    const latestByQuiz = new Map();
+
+    attempts.forEach((attempt) => {
+        if (!attempt.quizId) return;
+        const key = String(attempt.quizId);
+        const current = latestByQuiz.get(key);
+        if (!current || new Date(attempt.attemptedAt || 0) > new Date(current.attemptedAt || 0)) {
+            latestByQuiz.set(key, attempt);
+        }
+    });
+
+    const latest = Array.from(latestByQuiz.values());
+    return {
+        totalAttempts: attempts.length,
+        passed: latest.filter(a => a.passed).length,
+        failed: latest.filter(a => !a.passed).length,
+        latestResults: latest.map(a => ({
+            quizId: a.quizId,
+            score: a.score,
+            totalQuestions: a.totalQuestions || 0,
+            correctAnswers: a.correctAnswers || 0,
+            passed: a.passed,
+            attemptedAt: a.attemptedAt
+        }))
+    };
+};
 
 // @desc    Create a new course
 // @route   POST /api/admin/courses
@@ -51,6 +100,9 @@ const validateProgram = (data) => {
 
                     const hasVideo = mod.content.some(c => c.type === 'video');
                     if (!hasVideo) errors.push(`Module ${idx + 1} must contain at least one video`);
+
+                    const videoCount = mod.content.filter(c => c.type === 'video').length;
+                    if (videoCount > 1) errors.push(`Module ${idx + 1} can contain only one video`);
                 }
             });
             if (!hasContent) errors.push("Program must have content");
@@ -66,9 +118,9 @@ const validateProgram = (data) => {
 
     // 5. Internship Logic
     if (data.type === 'internship') {
-        // "Internship description... Duration... Outcome"
-        // These map to standard fields?
-        // "Video modules NOT required"
+        if (!data.internshipOfferTemplate && !data.internshipTemplate) {
+            // Allow saving as draft without templates — only block publish
+        }
     }
 
     return {
@@ -77,12 +129,31 @@ const validateProgram = (data) => {
     };
 };
 
+const validateSingleVideoPerModule = (modules = []) => {
+    const errors = [];
+    modules.forEach((mod, idx) => {
+        const count = (mod.content || []).filter((item) => item.type === 'video').length;
+        if (count > 1) {
+            errors.push(`Module ${idx + 1} has ${count} videos. Only one video is allowed per module.`);
+        }
+    });
+    return errors;
+};
+
 // @desc    Create a new course
 // @route   POST /api/admin/courses
 // @access  Private/Admin
 const createCourse = async (req, res) => {
     try {
-        const { title, description, type, level, duration, price, videos, modules, image, certificateTemplate, status } = req.body;
+        const { title, description, type, level, duration, price, videos, modules, image, certificateTemplate, internshipTemplate, internshipOfferTemplate, internshipCertificateTemplate, startDate, endDate, status } = req.body;
+
+        const moduleErrors = validateSingleVideoPerModule(modules || []);
+        if (moduleErrors.length > 0) {
+            return res.status(400).json({
+                message: 'Invalid module video structure',
+                errors: moduleErrors
+            });
+        }
 
         // Generate Program Code
         const prefixes = {
@@ -119,6 +190,9 @@ const createCourse = async (req, res) => {
             price,
             image: image || '',
             certificateTemplate: certificateTemplate || '',
+            internshipTemplate: internshipTemplate || '',
+            internshipOfferTemplate: internshipOfferTemplate || '',
+            internshipCertificateTemplate: internshipCertificateTemplate || '',
             modules: modules || [],
             videos: videos || [], // Legacy support
             status: finalStatus,
@@ -140,16 +214,19 @@ const createCourse = async (req, res) => {
 // @access  Private/Admin
 const updateCourse = async (req, res) => {
     try {
-        const { status, modules } = req.body;
+        const { status, modules, certificateTemplate, internshipTemplate, internshipOfferTemplate, internshipCertificateTemplate } = req.body;
+
+        if (modules) {
+            const moduleErrors = validateSingleVideoPerModule(modules);
+            if (moduleErrors.length > 0) {
+                return res.status(400).json({
+                    message: 'Invalid module video structure',
+                    errors: moduleErrors
+                });
+            }
+        }
 
         let updateData = { ...req.body };
-
-        // If status is changing to published, or is already published and being updated
-        // actually, we should validate if the RESULTING state is valid.
-        // But for simplicity, if request says status='published', we validate the incoming body merged with existing? 
-        // Or just the incoming body if it's a full update?
-        // PUT usually replaces, but often used as PATCH. 
-        // Let's assume req.body contains the full form data from the UI wizard.
 
         if (status === 'published') {
             const validation = validateProgram(req.body);
@@ -164,8 +241,6 @@ const updateCourse = async (req, res) => {
         } else if (status === 'draft' || status === 'archived') {
             updateData.isPublished = false;
         } else {
-            // Keep current publishing state if status is not explicitly changed to draft/archived
-            // This allows updating a 'published' course without sending status='published' every time
             const currentCourse = await Course.findById(req.params.id);
             if (currentCourse && (currentCourse.status === 'published' || currentCourse.isPublished)) {
                 updateData.isPublished = true;
@@ -179,6 +254,12 @@ const updateCourse = async (req, res) => {
             return res.status(404).json({ message: 'Course not found' });
         }
 
+        // Check if template changed
+        const templateChanged = (certificateTemplate && course.certificateTemplate !== certificateTemplate) || 
+                          (internshipTemplate && course.internshipTemplate !== internshipTemplate) ||
+                          (internshipOfferTemplate && course.internshipOfferTemplate !== internshipOfferTemplate) ||
+                          (internshipCertificateTemplate && course.internshipCertificateTemplate !== internshipCertificateTemplate);
+
         const updatedCourse = await Course.findByIdAndUpdate(req.params.id, updateData, {
             new: true,
         });
@@ -186,6 +267,47 @@ const updateCourse = async (req, res) => {
         // Link Quizzes
         if (modules) {
             await linkQuizzesToCourse(updatedCourse._id, modules);
+        }
+
+        // ── Regular certificate template changed ───────────────────────
+        const certTemplateChanged = certificateTemplate && course.certificateTemplate !== certificateTemplate;
+        // ── Internship offer letter template changed ───────────────────
+        const offerTemplateChanged = internshipOfferTemplate && course.internshipOfferTemplate !== internshipOfferTemplate;
+        // ── Internship completion cert template changed ────────────────
+        const internCertTemplateChanged = internshipCertificateTemplate && course.internshipCertificateTemplate !== internshipCertificateTemplate;
+
+        // Asynchronously regenerate docs (non-blocking — don't delay the API response)
+        if (certTemplateChanged) {
+            console.log(`[updateCourse] Certificate template changed – regenerating all completed certs...`);
+            Enrollment.find({ courseId: updatedCourse._id, status: 'completed' })
+                .then(async (enrollments) => {
+                    for (const e of enrollments) {
+                        try { await issueCertificate(e.userId, e.courseId); }
+                        catch (err) { console.error(`Cert regen failed for user ${e.userId}:`, err.message); }
+                    }
+                }).catch(err => console.error('Cert regen lookup error:', err.message));
+        }
+
+        if (offerTemplateChanged) {
+            console.log(`[updateCourse] Internship offer template changed – regenerating all offer letters...`);
+            Enrollment.find({ courseId: updatedCourse._id })
+                .then(async (enrollments) => {
+                    for (const e of enrollments) {
+                        try { await issueInternshipOffer(e.userId, e.courseId); }
+                        catch (err) { console.error(`Offer regen failed for user ${e.userId}:`, err.message); }
+                    }
+                }).catch(err => console.error('Offer regen lookup error:', err.message));
+        }
+
+        if (internCertTemplateChanged) {
+            console.log(`[updateCourse] Internship cert template changed – regenerating completed certs...`);
+            Enrollment.find({ courseId: updatedCourse._id, status: 'completed' })
+                .then(async (enrollments) => {
+                    for (const e of enrollments) {
+                        try { await issueInternshipCertificate(e.userId, e.courseId); }
+                        catch (err) { console.error(`Intern cert regen failed for user ${e.userId}:`, err.message); }
+                    }
+                }).catch(err => console.error('Intern cert regen lookup error:', err.message));
         }
 
         res.json(updatedCourse);
@@ -515,28 +637,199 @@ const createQuiz = async (req, res) => {
     }
 };
 
-// @desc    Mock Upload Video/Image (returns parsed metadata)
-// @route   POST /api/admin/upload-video
+// @desc    Upload Course Asset (Image or PDF Template)
+// @route   POST /api/admin/upload-video   (images)
+// @route   POST /api/admin/upload-template (PDF templates)
 // @access  Private/Admin
 const uploadVideo = async (req, res) => {
-    // In production, Multer would handle the file and upload to S3.
-    // Here we just mock the response.
-    const { filename, type } = req.body;
-
-    if (type === 'image') {
-        return res.json({
-            message: 'Image metadata received',
-            url: 'https://via.placeholder.com/800x400.png?text=Course+Banner', // Mock image
-            filename: filename || 'banner.png'
+    try {
+        console.log('Upload payload debug:', {
+            fileField: req.file?.fieldname,
+            fileName: req.file?.originalname,
+            mimeType: req.file?.mimetype,
+            body: req.body
         });
-    }
 
-    res.json({
-        message: 'Video metadata received',
-        url: 'https://example.com/video-placeholder.mp4',
-        filename: filename || 'video.mp4'
-    });
+        if (!req.file) {
+            return res.status(400).json({
+                message: 'No file uploaded. Ensure multipart/form-data is sent with the expected field name.'
+            });
+        }
+
+        if ((req.file.mimetype || '').startsWith('video/')) {
+            const uploaded = await uploadVideoFile(req.file);
+            return res.json({
+                message: 'File uploaded successfully',
+                url: uploaded.url,
+                filename: uploaded.fileName,
+                fileSizeBytes: uploaded.fileSizeBytes,
+                storageProvider: uploaded.provider
+            });
+        }
+
+        // Derive the correct public URL from the actual saved path.
+        // req.file.path might be like `public\uploads\templates\file.pdf`
+        const normalizedPath = req.file.path.replace(/\\/g, '/');
+        // Extract everything after 'public/'
+        const match = normalizedPath.match(/public\/(.*)/);
+        const relativePath = match ? match[1] : normalizedPath;
+        const fileUrl = `/${relativePath}`;
+
+        res.json({
+            message: 'File uploaded successfully',
+            url: fileUrl,
+            filename: req.file.filename
+        });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
 };
+
+// @desc    List uploaded videos (optionally by course)
+// @route   GET /api/admin/videos
+// @access  Private/Admin
+const getAdminVideos = async (req, res) => {
+    try {
+        const { courseId } = req.query;
+        const query = courseId ? { _id: courseId } : {};
+
+        const courses = await Course.find(query).select('title modules');
+        const rows = [];
+
+        courses.forEach((course) => {
+            (course.modules || []).forEach((mod) => {
+                const video = (mod.content || []).find((item) => item.type === 'video' && item.url);
+                if (!video) return;
+
+                rows.push({
+                    courseId: course._id,
+                    courseTitle: course.title,
+                    moduleId: mod._id,
+                    moduleTitle: mod.title,
+                    videoId: video._id,
+                    videoTitle: video.title,
+                    url: video.url,
+                    fileName: video.fileName || video.title,
+                    fileSizeBytes: video.fileSizeBytes || inferLocalVideoSize(video.url),
+                    uploadedAt: video.uploadedAt || null,
+                    storageProvider: video.storageProvider || 'local'
+                });
+            });
+        });
+
+        res.json(rows);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// @desc    Upload/replace module video
+// @route   POST /api/admin/videos/upload
+// @access  Private/Admin
+const uploadModuleVideo = async (req, res) => {
+    try {
+        const { courseId, moduleId, duration } = req.body;
+
+        if (!courseId || !moduleId) {
+            return res.status(400).json({ message: 'courseId and moduleId are required' });
+        }
+
+        if (!req.file) {
+            return res.status(400).json({ message: 'Video file is required' });
+        }
+
+        const course = await Course.findById(courseId);
+        if (!course) return res.status(404).json({ message: 'Course not found' });
+
+        const moduleDoc = (course.modules || []).find((mod) => String(mod._id) === String(moduleId));
+        if (!moduleDoc) return res.status(404).json({ message: 'Module not found in this course' });
+
+        const uploaded = await uploadVideoFile(req.file);
+
+        const existingVideoIndex = (moduleDoc.content || []).findIndex((item) => item.type === 'video');
+        if (existingVideoIndex >= 0) {
+            const existingVideo = moduleDoc.content[existingVideoIndex];
+            await deleteVideoFile({
+                provider: existingVideo.storageProvider,
+                key: existingVideo.storageKey,
+                url: existingVideo.url
+            });
+
+            moduleDoc.content[existingVideoIndex] = {
+                ...moduleDoc.content[existingVideoIndex].toObject(),
+                type: 'video',
+                title: req.body.title || req.file.originalname.replace(/\.[^/.]+$/, ''),
+                url: uploaded.url,
+                duration: duration || moduleDoc.content[existingVideoIndex].duration || '00:00',
+                fileName: uploaded.fileName,
+                fileSizeBytes: uploaded.fileSizeBytes,
+                storageProvider: uploaded.provider,
+                storageKey: uploaded.key,
+                uploadedAt: new Date()
+            };
+        } else {
+            moduleDoc.content.push({
+                type: 'video',
+                title: req.body.title || req.file.originalname.replace(/\.[^/.]+$/, ''),
+                url: uploaded.url,
+                duration: duration || '00:00',
+                fileName: uploaded.fileName,
+                fileSizeBytes: uploaded.fileSizeBytes,
+                storageProvider: uploaded.provider,
+                storageKey: uploaded.key,
+                uploadedAt: new Date()
+            });
+        }
+
+        await course.save();
+
+        res.json({
+            message: 'Video uploaded successfully',
+            courseId,
+            moduleId,
+            url: uploaded.url,
+            fileName: uploaded.fileName,
+            fileSizeBytes: uploaded.fileSizeBytes,
+            storageProvider: uploaded.provider
+        });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// @desc    Delete module video
+// @route   DELETE /api/admin/videos/:courseId/:moduleId
+// @access  Private/Admin
+const deleteModuleVideo = async (req, res) => {
+    try {
+        const { courseId, moduleId } = req.params;
+        const course = await Course.findById(courseId);
+        if (!course) return res.status(404).json({ message: 'Course not found' });
+
+        const moduleDoc = (course.modules || []).find((mod) => String(mod._id) === String(moduleId));
+        if (!moduleDoc) return res.status(404).json({ message: 'Module not found in this course' });
+
+        const existingVideoIndex = (moduleDoc.content || []).findIndex((item) => item.type === 'video');
+        if (existingVideoIndex < 0) {
+            return res.status(404).json({ message: 'No video found in this module' });
+        }
+
+        const existingVideo = moduleDoc.content[existingVideoIndex];
+        await deleteVideoFile({
+            provider: existingVideo.storageProvider,
+            key: existingVideo.storageKey,
+            url: existingVideo.url
+        });
+
+        moduleDoc.content = moduleDoc.content.filter((_, idx) => idx !== existingVideoIndex);
+        await course.save();
+
+        res.json({ message: 'Module video deleted successfully' });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
 
 // @desc    Get all enrollments
 // @route   GET /api/admin/enrollments
@@ -558,11 +851,123 @@ const getAllEnrollments = async (req, res) => {
 
             return {
                 ...enrollment,
-                paymentDetails: payment || null
+                paymentDetails: payment || null,
+                completionStatus: enrollment.status === 'completed' ? 'completed' : 'not completed',
+                feedback: enrollment.feedback || { submitted: false, rating: null, comments: '' },
+                quizTracking: getQuizTrackingSummary(enrollment)
             };
         }));
 
         res.json(enrichedEnrollments);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// @desc    Get detailed monitoring for a selected enrollment and student's full learning map
+// @route   GET /api/admin/enrollments/:id/details
+// @access  Private/Admin
+const getEnrollmentMonitoringDetails = async (req, res) => {
+    try {
+        const selectedEnrollment = await Enrollment.findById(req.params.id)
+            .populate('userId', 'name email phone collegeName collegeDetails personalAddress')
+            .populate('courseId', 'title type level duration modules');
+
+        if (!selectedEnrollment) {
+            return res.status(404).json({ message: 'Enrollment not found' });
+        }
+
+        const studentEnrollments = await Enrollment.find({ userId: selectedEnrollment.userId._id })
+            .populate('courseId', 'title type level duration')
+            .sort({ enrolledAt: -1 });
+
+        const courseProgressMap = studentEnrollments.map((enrollment) => ({
+            enrollmentId: enrollment._id,
+            courseId: enrollment.courseId?._id,
+            courseTitle: enrollment.courseId?.title || 'Unknown Course',
+            courseType: enrollment.courseId?.type || 'unknown',
+            completionPercentage: enrollment.completionPercentage || 0,
+            status: enrollment.status,
+            completionStatus: enrollment.status === 'completed' ? 'completed' : 'not completed',
+            feedbackSubmitted: Boolean(enrollment.feedback?.submitted),
+            feedbackRating: enrollment.feedback?.rating || null,
+            quizTracking: getQuizTrackingSummary(enrollment)
+        }));
+
+        res.json({
+            selectedEnrollment: {
+                ...selectedEnrollment.toObject(),
+                completionStatus: selectedEnrollment.status === 'completed' ? 'completed' : 'not completed',
+                feedback: selectedEnrollment.feedback || { submitted: false },
+                quizTracking: getQuizTrackingSummary(selectedEnrollment)
+            },
+            student: selectedEnrollment.userId,
+            studentCourseProgress: courseProgressMap
+        });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// @desc    Export enrollments for a selected course as Excel
+// @route   GET /api/admin/enrollments/export/:courseId
+// @access  Private/Admin
+const exportCourseEnrollments = async (req, res) => {
+    try {
+        const { courseId } = req.params;
+        const course = await Course.findById(courseId).select('title');
+        if (!course) {
+            return res.status(404).json({ message: 'Course not found' });
+        }
+
+        const enrollments = await Enrollment.find({ courseId })
+            .populate('userId', 'name email phone collegeName collegeDetails personalAddress')
+            .populate('courseId', 'title')
+            .sort({ enrolledAt: -1 });
+
+        const workbook = new ExcelJS.Workbook();
+        const worksheet = workbook.addWorksheet('Enrollments');
+
+        worksheet.columns = [
+            { header: 'Student Name', key: 'studentName', width: 24 },
+            { header: 'Student Email', key: 'studentEmail', width: 32 },
+            { header: 'Phone', key: 'phone', width: 18 },
+            { header: 'College/Organization', key: 'collegeName', width: 28 },
+            { header: 'Course Name', key: 'courseName', width: 30 },
+            { header: 'Enrollment Status', key: 'enrollmentStatus', width: 20 },
+            { header: 'Progress %', key: 'progressPercentage', width: 14 },
+            { header: 'Completion Status', key: 'completionStatus', width: 20 },
+            { header: 'Feedback Submitted', key: 'feedbackSubmitted', width: 20 },
+            { header: 'Feedback Rating', key: 'feedbackRating', width: 16 },
+            { header: 'Feedback Comments', key: 'feedbackComments', width: 50 }
+        ];
+
+        enrollments.forEach((enrollment) => {
+            worksheet.addRow({
+                studentName: enrollment.userId?.name || 'Unknown',
+                studentEmail: enrollment.userId?.email || '',
+                phone: enrollment.userId?.phone || '',
+                collegeName: enrollment.userId?.collegeName || '',
+                courseName: enrollment.courseId?.title || course.title,
+                enrollmentStatus: enrollment.status,
+                progressPercentage: enrollment.completionPercentage || 0,
+                completionStatus: enrollment.status === 'completed' ? 'completed' : 'not completed',
+                feedbackSubmitted: enrollment.feedback?.submitted ? 'Yes' : 'No',
+                feedbackRating: enrollment.feedback?.rating || '',
+                feedbackComments: enrollment.feedback?.comments || ''
+            });
+        });
+
+        worksheet.getRow(1).font = { bold: true };
+        worksheet.views = [{ state: 'frozen', ySplit: 1 }];
+
+        const safeTitle = String(course.title || 'course').replace(/[^a-z0-9]/gi, '_').toLowerCase();
+        const fileName = `${safeTitle}_enrollments.xlsx`;
+
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename=${fileName}`);
+        await workbook.xlsx.write(res);
+        res.end();
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -624,6 +1029,7 @@ const getDashboardStats = async (req, res) => {
         // 4. Total Active & Draft Courses
         const totalActiveCourses = await Course.countDocuments({ isPublished: true });
         const totalDraftCourses = await Course.countDocuments({ isPublished: false });
+        const totalCertificates = await Certificate.countDocuments({});
 
 
         // 5. Top 5 High Enrollment Courses
@@ -702,6 +1108,7 @@ const getDashboardStats = async (req, res) => {
             enrollmentStats,
             totalActiveCourses,
             totalDraftCourses,
+            totalCertificates,
             totalHours,
             topCourses
         });
@@ -735,8 +1142,6 @@ const linkQuizzesToCourse = async (courseId, modules) => {
         );
     }
 };
-
-// ... (existing code)
 
 // @desc    Get single quiz by ID
 // @route   GET /api/admin/quizzes/:id
@@ -773,6 +1178,157 @@ const updateQuiz = async (req, res) => {
     }
 };
 
+// @desc    Update enrollment status (e.g., mark as completed)
+// @route   PUT /api/admin/enrollments/:id/status
+// @access  Private/Admin
+const updateEnrollmentStatus = async (req, res) => {
+    try {
+        const { status } = req.body;
+
+        // Validate status
+        const allowedStatuses = ['enrolled', 'pending', 'completed'];
+        if (!allowedStatuses.includes(status)) {
+            return res.status(400).json({ message: `Invalid status. Must be one of: ${allowedStatuses.join(', ')}` });
+        }
+
+        const enrollment = await Enrollment.findById(req.params.id);
+
+        if (!enrollment) {
+            return res.status(404).json({ message: 'Enrollment not found' });
+        }
+
+        // Save status first to ensure the database record is updated
+        enrollment.status = status;
+        await enrollment.save();
+
+        // If status is changed to completed and it wasn't completed before, issue document
+        if (status === 'completed') {
+            enrollment.completionPercentage = 100;
+            enrollment.feedback = {
+                ...(enrollment.feedback || {}),
+                required: false
+            };
+            try {
+                const course = await Course.findById(enrollment.courseId);
+                if (course.type === 'internship') {
+                    await issueInternshipCertificate(enrollment.userId, enrollment.courseId);
+                } else {
+                    await issueCertificate(enrollment.userId, enrollment.courseId);
+                }
+                
+                // Update specific flag if needed, though dynamic generation handles it
+                enrollment.certificateIssued = true;
+                await enrollment.save();
+            } catch (certError) {
+                console.error('Document generation failed (non-fatal):', certError.message);
+            }
+        }
+
+        res.json({
+            message: `Enrollment marked as ${status}`,
+            enrollment
+        });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// @desc    Get all certificates
+// @route   GET /api/admin/certificates
+// @access  Private/Admin
+const getAllCertificates = async (req, res) => {
+    try {
+        const certificates = await Certificate.find({})
+            .populate('userId', 'name email')
+            .populate('courseId', 'title')
+            .sort({ generatedDate: -1 });
+        res.json(certificates);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// @desc    Download Certificate (Dynamic)
+// @route   GET /api/admin/certificates/:id/download
+// @access  Private/Admin
+const downloadCertificate = async (req, res) => {
+    try {
+        const certificate = await Certificate.findById(req.params.id);
+        
+        if (!certificate) {
+            return res.status(404).json({ message: 'Certificate not found' });
+        }
+
+        // Generate on-the-fly
+        console.log(`Dynamic download requested by admin for cert ${req.params.id}. Regenerating...`);
+        const { pdfBytes, fileName } = await issueCertificate(certificate.userId, certificate.courseId);
+
+        // Stream PDF to client
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename=${fileName}`);
+        res.send(Buffer.from(pdfBytes));
+
+    } catch (error) {
+        console.error('Download Error:', error.message);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// @desc    Get all internship offer letters
+// @route   GET /api/admin/internships/offers
+// @access  Private/Admin
+const getAllInternshipOffers = async (req, res) => {
+    try {
+        const offers = await InternshipOffer.find({})
+            .populate('userId', 'name email phone')
+            .populate('courseId', 'title')
+            .sort({ issuedDate: -1 });
+        res.json(offers);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// @desc    Get all internship completion certificates
+// @route   GET /api/admin/internships/certificates
+// @access  Private/Admin
+const getAllInternshipCertificates = async (req, res) => {
+    try {
+        const certificates = await InternshipCertificate.find({})
+            .populate('userId', 'name email phone')
+            .populate('courseId', 'title')
+            .sort({ issuedDate: -1 });
+        res.json(certificates);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// @desc    Download Internship Certificate (Dynamic)
+// @route   GET /api/admin/internships/certificates/:id/download
+// @access  Private/Admin
+const downloadInternshipCertificate = async (req, res) => {
+    try {
+        const certificate = await InternshipCertificate.findById(req.params.id);
+        
+        if (!certificate) {
+            return res.status(404).json({ message: 'Certificate not found' });
+        }
+
+        // Generate on-the-fly
+        const { pdfBytes, fileName } = await issueInternshipCertificate(certificate.userId, certificate.courseId);
+
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename=${fileName}`);
+        res.send(Buffer.from(pdfBytes));
+
+    } catch (error) {
+        console.error('Download Error:', error.message);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+
 module.exports = {
     createCourse,
     updateCourse,
@@ -781,6 +1337,10 @@ module.exports = {
     getAllStudents,
     enrollStudent,
     getAllEnrollments,
+    getEnrollmentMonitoringDetails,
+    exportCourseEnrollments,
+    updateEnrollmentStatus,
+    getAllCertificates,
     createStudent,
     getStudentCredentials,
     resendStudentCredentials,
@@ -792,5 +1352,12 @@ module.exports = {
     uploadVideo,
     deleteCourse,
     deleteStudent,
-    linkQuizzesToCourse
+    linkQuizzesToCourse,
+    downloadCertificate,
+    getAllInternshipOffers,
+    getAllInternshipCertificates,
+    downloadInternshipCertificate,
+    getAdminVideos,
+    uploadModuleVideo,
+    deleteModuleVideo
 };
