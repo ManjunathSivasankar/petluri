@@ -50,6 +50,26 @@ const courseSchema = new mongoose.Schema({
         type: String, // URL to certificate background
         default: ''
     },
+    internshipTemplate: {
+        type: String, // Deprecated: URL to internship letter/certificate template
+        default: ''
+    },
+    internshipOfferTemplate: {
+        type: String, // URL to internship offer letter template PDF
+        default: ''
+    },
+    internshipCertificateTemplate: {
+        type: String, // URL to internship completion certificate template PDF
+        default: ''
+    },
+    startDate: {
+        type: Date, // Internship start date
+        default: null
+    },
+    endDate: {
+        type: Date, // Internship end date
+        default: null
+    },
     modules: [{
         title: { type: String, required: true },
         description: { type: String, required: true }, // Added mandatory description
@@ -58,6 +78,11 @@ const courseSchema = new mongoose.Schema({
             title: { type: String, required: true },
             url: { type: String }, // For video
             duration: { type: String }, // For video
+            fileName: { type: String },
+            fileSizeBytes: { type: Number, default: 0 },
+            storageProvider: { type: String, enum: ['local', 'backblaze'], default: 'local' },
+            storageKey: { type: String, default: '' },
+            uploadedAt: { type: Date, default: null },
             quizId: { type: mongoose.Schema.Types.ObjectId, ref: 'Quiz' } // For quiz
         }]
     }],

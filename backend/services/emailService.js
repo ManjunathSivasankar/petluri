@@ -20,6 +20,11 @@ const sendEmail = async (options) => {
         html: options.html // Optional
     };
 
+    // Support PDF/file attachments
+    if (options.attachments && options.attachments.length > 0) {
+        message.attachments = options.attachments;
+    }
+
     console.log(`DEBUG: Sending email to ${options.email} with subject: ${options.subject}`);
     const info = await transporter.sendMail(message);
 

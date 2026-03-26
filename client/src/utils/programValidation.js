@@ -39,18 +39,19 @@ export const validateProgram = (formData) => {
 
         if (hasModules) {
             formData.modules.forEach((m, idx) => {
-                if (!m.content || m.content.length === 0) {
+                const hasModTitle = !!m.title;
+                const hasModDesc = !!m.description;
+                const hasContent = m.content && m.content.length > 0;
+                const hasVideo = hasContent && m.content.some(c => c.type === 'video');
+
+                if (!hasModTitle || !hasModDesc) {
                     allModulesValid = false;
-                    checks.content.items.push({ label: `Module ${idx + 1}: Needs content`, valid: false });
+                    checks.content.items.push({ label: `Module ${idx + 1}: Needs Title & Description`, valid: false });
+                } else if (!hasVideo) {
+                    allModulesValid = false;
+                    checks.content.items.push({ label: `Module ${idx + 1}: Needs 1+ video`, valid: false });
                 } else {
-                    // Check for video
-                    const hasVideo = m.content.some(c => c.type === 'video');
-                    if (!hasVideo) {
-                        allModulesValid = false;
-                        checks.content.items.push({ label: `Module ${idx + 1}: Needs 1+ video`, valid: false });
-                    } else {
-                        checks.content.items.push({ label: `Module ${idx + 1}: Valid`, valid: true });
-                    }
+                    checks.content.items.push({ label: `Module ${idx + 1}: Valid`, valid: true });
                 }
             });
         } else {

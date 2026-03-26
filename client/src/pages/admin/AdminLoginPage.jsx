@@ -8,7 +8,13 @@ import { useAuth } from '@/context/AuthContext';
 
 const AdminLoginPage = () => {
     const navigate = useNavigate();
-    const { login } = useAuth();
+    const { login, user } = useAuth();
+
+    React.useEffect(() => {
+        if (user && user.role === 'admin') {
+            navigate('/admin/dashboard');
+        }
+    }, [user, navigate]);
 
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');

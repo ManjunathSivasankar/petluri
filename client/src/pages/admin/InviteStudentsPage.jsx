@@ -212,7 +212,9 @@ const InviteStudentsPage = () => {
                                 </tr>
                             ) : (
                                 history.map((row) => {
-                                    const typeStyle = PROGRAM_STYLES[row.type] || PROGRAM_STYLES.PROFESSIONAL;
+                                    const dbType = row.type ? row.type.toLowerCase() : '';
+                                    const styleKey = Object.keys(PROGRAM_STYLES).find(k => k.toLowerCase().includes(dbType)) || PROGRAM_TYPES.PROFESSIONAL;
+                                    const typeStyle = PROGRAM_STYLES[styleKey] || PROGRAM_STYLES[PROGRAM_TYPES.PROFESSIONAL];
                                     const dateDisplay = row.createdAt ? new Date(row.createdAt).toLocaleDateString('en-GB') : (row.date || '-');
 
                                     return (

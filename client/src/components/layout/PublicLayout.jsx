@@ -42,10 +42,13 @@ const PublicLayout = () => {
                                 <li>
                                     <a href="/internships" className="text-sm text-slate-500 hover:text-brand-blue transition-colors">Internships</a>
                                 </li>
-                                <li>
-                                    <a href="/about" className="text-sm text-slate-500 hover:text-brand-blue transition-colors">About Us</a>
-                                </li>
-                            </ul>
+                                 <li>
+                                     <a href="/about" className="text-sm text-slate-500 hover:text-brand-blue transition-colors">About Us</a>
+                                 </li>
+                                 <li>
+                                     <a href="/admin/login" className="text-sm text-slate-400 hover:text-brand-blue transition-colors">Admin Portal</a>
+                                 </li>
+                             </ul>
                         </div>
 
                         {/* Column 3: Verify Certificate */}

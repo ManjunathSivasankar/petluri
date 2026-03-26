@@ -5,14 +5,14 @@ const authorize = (...roles) => {
         }
         if (!roles.includes(req.user.role)) {
             return res.status(403).json({
-                message: `User role '${req.user.role}' is not authorized to access this route`
+                message: `User role '${req.user.role}' is not authorized to access this route (${req.originalUrl})`
             });
         }
         next();
     };
 };
 
-const adminOnly = authorize('admin');
-const studentOnly = authorize('student');
+const adminOnly = authorize('admin', 'super-admin');
+const studentOnly = authorize('student', 'admin', 'super-admin');
 
 module.exports = { authorize, adminOnly, studentOnly };

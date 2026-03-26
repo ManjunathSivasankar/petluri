@@ -1,9 +1,10 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { Icon } from '@/components/ui/Icon';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
+import { useAuth } from '@/context/AuthContext';
 
 const FeatureCard = ({ icon, title, description }) => (
     <Card className="border-none shadow-lg hover:shadow-xl transition-shadow duration-300">
@@ -22,6 +23,17 @@ const FeatureCard = ({ icon, title, description }) => (
 );
 
 const LandingPage = () => {
+    const { user, loading } = useAuth();
+    const navigate = useNavigate();
+
+    useEffect(() => {
+        if (!loading && user) {
+            navigate(user.role === 'admin' ? '/admin/dashboard' : '/student/dashboard');
+        }
+    }, [user, loading, navigate]);
+
+    if (loading) return null; // Prevents flash of landing page content while checking auth
+
     return (
         <div className="flex flex-col min-h-screen">
             {/* Hero Section */}

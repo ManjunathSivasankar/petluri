@@ -17,7 +17,21 @@ const app = express();
 // Middleware
 app.use(express.json()); // Body parser
 app.use(cors()); // Enable CORS
-app.use(helmet()); // Security headers
+app.use(helmet({
+    contentSecurityPolicy: {
+        directives: {
+            "default-src": ["'self'"],
+            "script-src": ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+            "style-src": ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+            "font-src": ["'self'", "https://fonts.gstatic.com"],
+            "img-src": ["'self'", "data:", "blob:"],
+            "connect-src": ["'self'", "http://localhost:5000", "ws://localhost:5173"],
+        },
+    },
+    crossOriginResourcePolicy: { policy: "cross-origin" }
+}));
+app.use(express.static(path.join(__dirname, 'public'))); // Serve static files
+app.use('/uploads', express.static(path.join(__dirname, 'public', 'uploads'))); // Direct uploaded assets path
 app.use(morgan('dev')); // Logger
 
 // Routes Placeholder

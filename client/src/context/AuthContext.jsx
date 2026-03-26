@@ -9,16 +9,31 @@ export const AuthProvider = ({ children }) => {
     const [user, setUser] = useState(null);
     const [loading, setLoading] = useState(true);
 
+    const clearAuthState = () => {
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        setUser(null);
+    };
+
     useEffect(() => {
-        // Check if token exists on load
+        // Validate saved auth on app load to avoid stale token sessions.
+        const bootstrapAuth = async () => {
         const token = localStorage.getItem('token');
         const storedUser = localStorage.getItem('user');
 
         if (token && storedUser) {
-            setUser(JSON.parse(storedUser));
-            // Optional: Validate token with backend /api/auth/me here
+                try {
+                    const parsedUser = JSON.parse(storedUser);
+                    await api.get('/auth/me');
+                    setUser(parsedUser);
+                } catch (error) {
+                    clearAuthState();
+                }
         }
         setLoading(false);
+        };
+
+        bootstrapAuth();
     }, []);
 
     const login = async (email, password) => {
@@ -33,9 +48,7 @@ export const AuthProvider = ({ children }) => {
     };
 
     const logout = () => {
-        localStorage.removeItem('token');
-        localStorage.removeItem('user');
-        setUser(null);
+        clearAuthState();
         window.location.href = '/login'; // Hard redirect to clear state perfectly
     };
 

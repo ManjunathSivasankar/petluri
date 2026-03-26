@@ -1,0 +1,13 @@
+=== OFFER ===
+  "text_1isrz" => "student_name"
+  "text_2tuqd" => "offer_id"
+  "text_3xoqx" => "year&dept"
+  "text_4efsa" => "college_name"
+=== CERT ===
+  "text_1msei" => "student_name"
+  "text_2wxoi" => "College_name"
+  "text_3xaky" => "Certificate_id"
+  "Certificate of Completion" => ""
+  "This is to Certify that" => ""
+  "Signatory Name Authourity" => ""
+  "COURSE NAME" => ""
