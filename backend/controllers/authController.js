@@ -134,28 +134,25 @@ const sendOtp = async (req, res) => {
         await Otp.create({ email, otp: otpCode });
 
         // Log OTP to console for development testing
-        console.log(`DEBUG: process.env.NODE_ENV = ${process.env.NODE_ENV}`);
         console.log(`[DEV] OTP for ${email}: ${otpCode}`);
 
-        // Send Email (Don't let email failure block login for dev)
+        // Send Email
         try {
-            console.log('DEBUG: Attempting to send OTP email...');
             await sendOtpEmail(email, otpCode);
-            console.log('DEBUG: sendOtpEmail resolved successfully');
         } catch (emailError) {
-            console.error('DEBUG: Email sending failed:', emailError.message);
+            console.error('Email sending failed:', emailError.message);
             // In development, we still want to return success so the user can enter the OTP from console
             if (process.env.NODE_ENV !== 'production') {
                 return res.json({
                     success: true,
-                    message: 'OTP logged to console (Email sending failed)',
-                    devNote: 'Check your backend terminal for the OTP code.'
+                    message: `OTP logged to console (Email sending failed: ${emailError.message})`,
+                    devNote: 'Check backend terminal for code.'
                 });
             }
             throw emailError;
         }
 
-        res.json({ success: true, message: 'OTP sent to email' });
+        res.json({ success: true, message: 'OTP sent successfully' });
     } catch (error) {
         console.error('OTP Send Error:', error);
         res.status(500).json({ message: 'Failed to send OTP' });
@@ -194,6 +191,7 @@ const verifyOtp = async (req, res) => {
             email: user.email,
             role: user.role,
             phone: user.phone,
+            studentId: user.studentId, // Essential for dashboard
             collegeName: user.collegeName,
             collegeDetails: user.collegeDetails,
             personalAddress: user.personalAddress,

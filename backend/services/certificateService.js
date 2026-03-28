@@ -17,6 +17,7 @@ const {
   StandardFonts,
 } = require("pdf-lib");
 const fontkit = require("@pdf-lib/fontkit");
+const idService = require("./idService");
 
 const drawFallbackCertificateText = async (pdfDoc, student, course, certificateId, completionDate, verificationUrl) => {
   const page = pdfDoc.getPages()[0] || pdfDoc.addPage([1190, 842]);
@@ -97,12 +98,7 @@ const drawFallbackCertificateText = async (pdfDoc, student, course, certificateI
   });
 };
 
-/**
- * Generate a unique certificate ID
- */
-const generateCertificateId = () => {
-  return `PETLURI-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
-};
+const { generateCertificateId: getGlobalCertId } = require("./idService");
 
 /**
  * Read a PDF string value from a PDFDict entry.
@@ -250,7 +246,7 @@ const issueCertificate = async (userId, courseId) => {
     // Reuse existing certificateId if it exists to avoid breaking links
     let certificateId = existingCert
       ? existingCert.certificateId
-      : generateCertificateId();
+      : getGlobalCertId(course.programId, student.studentId);
 
     const verificationUrl = `${process.env.CLIENT_URL || "http://localhost:5173"}/verify-certificate/${certificateId}`;
 
@@ -395,4 +391,4 @@ const issueCertificate = async (userId, courseId) => {
   }
 };
 
-module.exports = { issueCertificate, generateCertificateId };
+module.exports = { issueCertificate, generateCertificateId: idService.generateCertificateId };

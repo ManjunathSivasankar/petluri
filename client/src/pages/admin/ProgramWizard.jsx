@@ -18,6 +18,7 @@ const ProgramWizard = () => {
     const [currentStep, setCurrentStep] = useState(0);
     const [loading, setLoading] = useState(false);
     const [quizzes, setQuizzes] = useState([]);
+    const [highlightModule, setHighlightModule] = useState(null);
 
     const [formData, setFormData] = useState({
         title: '',
@@ -93,11 +94,46 @@ const ProgramWizard = () => {
         };
         fetchQuizzes();
     }, []);
+    
+    // URL Parameter Deep Linking
+    useEffect(() => {
+        const params = new URLSearchParams(window.location.search);
+        const step = params.get('step');
+        const module = params.get('module');
+        
+        if (step) setCurrentStep(parseInt(step));
+        if (module) setHighlightModule(parseInt(module));
+    }, []);
 
     const handleChange = (e) => {
         const { name, value } = e.target;
         setFormData(prev => ({ ...prev, [name]: value }));
     };
+
+    // Auto-calculate internship duration
+    useEffect(() => {
+        if (formData.type === 'internship' && formData.startDate && formData.endDate) {
+            const start = new Date(formData.startDate);
+            const end = new Date(formData.endDate);
+            if (!isNaN(start) && !isNaN(end) && end > start) {
+                const diffTime = Math.abs(end - start);
+                const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                
+                let durationStr = '';
+                if (diffDays >= 30) {
+                    const months = Math.round(diffDays / 30);
+                    durationStr = `${months} Month${months > 1 ? 's' : ''}`;
+                } else {
+                    const weeks = Math.round(diffDays / 7);
+                    durationStr = `${weeks} Week${weeks > 1 ? 's' : ''}`;
+                }
+                
+                if (formData.duration !== durationStr) {
+                    setFormData(prev => ({ ...prev, duration: durationStr }));
+                }
+            }
+        }
+    }, [formData.startDate, formData.endDate, formData.type]);
 
     const handleValueChange = (name, value) => {
         setFormData(prev => {
@@ -284,18 +320,21 @@ const ProgramWizard = () => {
     );
 
     const renderStep2 = () => (
-        <div className="space-y-4">
-            <div className="bg-blue-50 p-4 rounded-lg flex items-start gap-3 text-sm text-blue-700">
+        <div className="space-y-4">            <div className="bg-blue-50 p-4 rounded-lg flex items-start gap-3 text-sm text-blue-700">
                 <Icon name="Info" size={20} className="mt-0.5 shrink-0" />
                 <p>Organize your course into modules. You can add videos (upload) and quizzes (select existing) to each module.</p>
             </div>
-
             <ModuleEditor
+                courseId={id}
                 modules={formData.modules}
                 setModules={(newModules) => handleValueChange('modules', newModules)}
+                highlightModule={highlightModule}
+                programCode={formData.programCode}
+                courseTitle={formData.title}
                 quizzes={quizzes}
                 onQuizCreated={(newQuiz) => setQuizzes(prev => [...prev, newQuiz])}
             />
+
         </div>
     );
 
@@ -506,10 +545,23 @@ const ProgramWizard = () => {
                             <span className="text-slate-500 block">Type</span>
                             <span className="font-medium text-slate-900 capitalize">{formData.type}</span>
                         </div>
-                        <div>
-                            <span className="text-slate-500 block">Duration</span>
-                            <span className="font-medium text-slate-900">{formData.duration}</span>
-                        </div>
+                        {formData.type === 'internship' ? (
+                            <>
+                                <div>
+                                    <span className="text-slate-500 block">Dates</span>
+                                    <span className="font-medium text-slate-900">{formData.startDate} to {formData.endDate}</span>
+                                </div>
+                                <div>
+                                    <span className="text-slate-500 block">Duration (Calculated)</span>
+                                    <span className="font-medium text-slate-900">{formData.duration}</span>
+                                </div>
+                            </>
+                        ) : (
+                            <div>
+                                <span className="text-slate-500 block">Duration</span>
+                                <span className="font-medium text-slate-900">{formData.duration}</span>
+                            </div>
+                        )}
                         <div>
                             <span className="text-slate-500 block">Pricing</span>
                             <span className="font-medium text-slate-900">{formData.price ? `₹${formData.price}` : 'Free'}</span>

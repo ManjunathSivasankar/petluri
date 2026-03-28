@@ -47,13 +47,26 @@ export const AuthProvider = ({ children }) => {
         return data; // Return full user obj for redirection logic
     };
 
+    const sendOtp = async (email) => {
+        const { data } = await api.post('/auth/send-otp', { email });
+        return data;
+    };
+
+    const loginWithOtp = async (email, otp) => {
+        const { data } = await api.post('/auth/verify-otp', { email, otp });
+        localStorage.setItem('token', data.token);
+        localStorage.setItem('user', JSON.stringify(data));
+        setUser(data);
+        return data;
+    };
+
     const logout = () => {
         clearAuthState();
         window.location.href = '/login'; // Hard redirect to clear state perfectly
     };
 
     return (
-        <AuthContext.Provider value={{ user, login, logout, loading }}>
+        <AuthContext.Provider value={{ user, login, logout, sendOtp, loginWithOtp, loading }}>
             {!loading && children}
         </AuthContext.Provider>
     );

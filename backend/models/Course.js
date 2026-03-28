@@ -8,6 +8,11 @@ const videoSchema = new mongoose.Schema({
 });
 
 const courseSchema = new mongoose.Schema({
+    programId: {
+        type: String,
+        unique: true,
+        index: true
+    },
     programCode: {
         type: String,
         unique: true,
@@ -21,7 +26,6 @@ const courseSchema = new mongoose.Schema({
     },
     description: {
         type: String,
-        required: [true, 'Please add a description'],
         maxlength: 1000
     },
     type: {
@@ -35,8 +39,7 @@ const courseSchema = new mongoose.Schema({
         enum: ['Beginner', 'Intermediate', 'Advanced']
     },
     duration: {
-        type: String,
-        required: true // Total duration e.g., "40 hours"
+        type: String
     },
     price: {
         type: Number,
@@ -71,9 +74,12 @@ const courseSchema = new mongoose.Schema({
         default: null
     },
     modules: [{
+        moduleNumber: { type: Number },
         title: { type: String, required: true },
-        description: { type: String, required: true }, // Added mandatory description
+        description: { type: String }, // Optional for drafts
         content: [{
+            videoNumber: { type: Number },
+            quizNumber: { type: Number },
             type: { type: String, enum: ['video', 'quiz'], required: true },
             title: { type: String, required: true },
             url: { type: String }, // For video
@@ -83,6 +89,7 @@ const courseSchema = new mongoose.Schema({
             storageProvider: { type: String, enum: ['local', 'backblaze'], default: 'local' },
             storageKey: { type: String, default: '' },
             uploadedAt: { type: Date, default: null },
+            videoId: { type: String, default: '' }, // Structured ID e.g. PROG-M1-V1
             quizId: { type: mongoose.Schema.Types.ObjectId, ref: 'Quiz' } // For quiz
         }]
     }],
@@ -108,6 +115,33 @@ const courseSchema = new mongoose.Schema({
     createdAt: {
         type: Date,
         default: Date.now
+    }
+});
+
+courseSchema.pre('save', async function () {
+    // Generate Program ID for new courses
+    if (this.isNew && !this.programId) {
+        try {
+            const { generateProgramId } = require('../services/idService');
+            this.programId = await generateProgramId(this.type);
+        } catch (error) {
+            throw error;
+        }
+    }
+
+    // Force structural numbering for all modules and content items
+    if (this.modules) {
+        this.modules.forEach((mod, mIdx) => {
+            mod.moduleNumber = mIdx + 1;
+            if (mod.content) {
+                let vCount = 1;
+                let qCount = 1;
+                mod.content.forEach((item) => {
+                    if (item.type === 'video') item.videoNumber = vCount++;
+                    if (item.type === 'quiz') item.quizNumber = qCount++;
+                });
+            }
+        });
     }
 });
 

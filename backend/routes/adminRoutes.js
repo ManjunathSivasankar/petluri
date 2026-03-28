@@ -131,7 +131,11 @@ const {
     downloadInternshipCertificate,
     getAdminVideos,
     uploadModuleVideo,
-    deleteModuleVideo
+    deleteModuleVideo,
+    getB2BucketContents,
+    deleteB2File,
+    proxyVideo,
+    proxyB2File
 } = require('../controllers/adminController');
 const { protect } = require('../middlewares/authMiddleware');
 const { adminOnly } = require('../middlewares/roleMiddleware');
@@ -176,8 +180,12 @@ router.get('/internships/certificates/:id/download', downloadInternshipCertifica
 
 // Admin video management
 router.get('/videos', getAdminVideos);
+router.get('/videos/b2-bucket', getB2BucketContents);
+router.get('/videos/stream-raw', proxyB2File);
+router.delete('/videos/b2-file', deleteB2File);
 router.post('/videos/upload', handleMulter(uploadVideoFile.single('video')), uploadModuleVideo);
 router.delete('/videos/:courseId/:moduleId', deleteModuleVideo);
+router.get('/videos/stream/:courseId/:moduleId/:videoId', proxyVideo);
 
 // Upload course banner image (jpg/png/webp)
 router.post('/upload-image', handleMulter(uploadImage.single('file')), uploadVideo);

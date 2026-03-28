@@ -14,12 +14,26 @@ const BACKEND_BASE_URL = API_BASE_URL.replace(/\/api\/?$/, '');
 const resolveVideoUrl = (rawUrl) => {
     if (!rawUrl) return '';
     if (/^https?:\/\//i.test(rawUrl)) return rawUrl;
+
     const normalizedPath = rawUrl.startsWith('/') ? rawUrl : `/${rawUrl}`;
-    return `${BACKEND_BASE_URL}${normalizedPath}`;
+    let url = `${BACKEND_BASE_URL}${normalizedPath}`;
+
+    // If it's a proxy URL, append the auth token for the native video player
+    if (normalizedPath.startsWith('/api')) {
+        const token = localStorage.getItem('token');
+        if (token) {
+            url += (url.includes('?') ? '&' : '?') + `token=${token}`;
+        }
+    }
+
+    return url;
 };
 
 const isDirectVideoFile = (url = '') => {
-    return /\.(mp4|webm|ogg|mov|mkv|avi)(\?.*)?$/i.test(url) || url.includes('/uploads/videos/');
+    return /\.(mp4|webm|ogg|mov|mkv|avi)(\?.*)?$/i.test(url) ||
+        url.includes('/uploads/videos/') ||
+        url.includes('/api/student/video/stream/') ||
+        url.includes('/api/admin/videos/stream/');
 };
 
 const LearningPage = () => {
@@ -35,8 +49,15 @@ const LearningPage = () => {
     const [playbackRate, setPlaybackRate] = useState(1);
     const [watchedSeconds, setWatchedSeconds] = useState(0);
     const [videoDuration, setVideoDuration] = useState(0);
+    const [videoLoading, setVideoLoading] = useState(false);
+    const [isPlaying, setIsPlaying] = useState(false);
+    const [isFullscreen, setIsFullscreen] = useState(false);
+    const [volume, setVolume] = useState(1);
+    const [isMuted, setIsMuted] = useState(false);
+    const [showControls, setShowControls] = useState(true);
 
     const videoRef = useRef(null);
+    const playerContainerRef = useRef(null);
     const maxPlayedRef = useRef(0);
     const lastSyncAtRef = useRef(0);
 
@@ -53,7 +74,7 @@ const LearningPage = () => {
                     rating: data.feedback?.rating || 5,
                     comments: data.feedback?.comments || ''
                 });
-                
+
             } catch (error) {
                 console.error('Failed to fetch course content:', error);
             } finally {
@@ -91,21 +112,24 @@ const LearningPage = () => {
     };
 
     const modulePlaylist = useMemo(() => {
-        if (!courseData) return [];
+        if (!courseData || !courseData.modules) return [];
 
-        return (courseData.modules || [])
-            .map((mod, index) => {
-                const video = (mod.content || []).find((item) => item.type === 'video');
-                if (!video) return null;
-
-                return {
-                    ...video,
-                    moduleId: mod._id,
-                    moduleTitle: mod.title,
-                    moduleIndex: index + 1
-                };
-            })
-            .filter(Boolean);
+        const items = [];
+        courseData.modules.forEach((mod, mIdx) => {
+            if (mod.content) {
+                mod.content.forEach((contentItem) => {
+                    if (contentItem.type === 'video' || contentItem.type === 'quiz') {
+                        items.push({
+                            ...contentItem,
+                            moduleId: mod._id,
+                            moduleTitle: mod.title,
+                            moduleIndex: mIdx + 1
+                        });
+                    }
+                });
+            }
+        });
+        return items;
     }, [courseData]);
 
     const legacyPlaylist = useMemo(() => {
@@ -233,11 +257,74 @@ const LearningPage = () => {
         }
     }, [activeVideo?._id]);
 
+    // Auto-select first video on load
+    useEffect(() => {
+        if (!activeVideo && playlist.length > 0 && !loading) {
+            handleVideoSelect(playlist[0]);
+        }
+    }, [playlist, activeVideo, loading]);
+
     useEffect(() => {
         return () => {
             syncVideoProgress({ force: true, accessed: false, ended: false });
         };
     }, [activeVideo?._id, watchedSeconds, playbackRate]);
+
+    useEffect(() => {
+        let timeout;
+        const handleMouseMove = () => {
+            setShowControls(true);
+            clearTimeout(timeout);
+            if (isPlaying) {
+                timeout = setTimeout(() => setShowControls(false), 3000);
+            }
+        };
+        
+        const container = playerContainerRef.current;
+        if (container) {
+            container.addEventListener('mousemove', handleMouseMove);
+        }
+        return () => {
+            if (container) container.removeEventListener('mousemove', handleMouseMove);
+            clearTimeout(timeout);
+        };
+    }, [isPlaying]);
+
+    useEffect(() => {
+        const handleFsChange = () => setIsFullscreen(!!document.fullscreenElement);
+        document.addEventListener('fullscreenchange', handleFsChange);
+        return () => document.removeEventListener('fullscreenchange', handleFsChange);
+    }, []);
+
+    const toggleFullscreen = () => {
+        if (!playerContainerRef.current) return;
+        if (!document.fullscreenElement) {
+            playerContainerRef.current.requestFullscreen().catch(err => {
+                console.error(`Fullscreen error: ${err.message}`);
+            });
+        } else {
+            document.exitFullscreen();
+        }
+    };
+
+    const togglePlay = () => {
+        if (!videoRef.current) return;
+        if (videoRef.current.paused) {
+            videoRef.current.play();
+            setIsPlaying(true);
+        } else {
+            videoRef.current.pause();
+            setIsPlaying(false);
+        }
+    };
+
+    const formatTime = (seconds) => {
+        const h = Math.floor(seconds / 3600);
+        const m = Math.floor((seconds % 3600) / 60);
+        const s = Math.floor(seconds % 60);
+        if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+        return `${m}:${s.toString().padStart(2, '0')}`;
+    };
 
     if (loading) return <div className="p-8 text-center">Loading course content...</div>;
     if (!courseData) return <div className="p-8 text-center text-red-500">Course not found or access denied.</div>;
@@ -254,41 +341,220 @@ const LearningPage = () => {
             <div className="flex-1 flex flex-col min-w-0">
                 <div className="aspect-video bg-black rounded-xl overflow-hidden shadow-lg relative flex items-center justify-center">
                     {activeVideo ? (
-                        isDirectVideoFile(playableVideoUrl) ? (
-                            <div className="w-full h-full flex flex-col">
-                                <video
-                                    ref={videoRef}
-                                    className="w-full h-full"
-                                    src={playableVideoUrl}
-                                    controls
-                                    preload="metadata"
-                                    onLoadedMetadata={() => {
-                                        if (videoRef.current) {
-                                            setVideoDuration(Number(videoRef.current.duration || 0));
-                                            videoRef.current.playbackRate = playbackRate;
-                                        }
-                                    }}
-                                    onTimeUpdate={handleTimeUpdate}
-                                    onPause={() => syncVideoProgress({ force: true, accessed: false, ended: false })}
-                                    onEnded={() => syncVideoProgress({ force: true, accessed: false, ended: true })}
+                        activeVideo.type === 'quiz' ? (
+                            <div className="w-full h-full flex flex-col items-center justify-center bg-slate-900 text-white p-6 text-center">
+                                <Icon name="HelpCircle" size={64} className="mb-4 text-blue-400 opacity-80" />
+                                <h2 className="text-2xl font-bold mb-2">{activeVideo.title || 'Module Quiz'}</h2>
+                                <p className="text-slate-400 mb-8 max-w-md">
+                                    This module includes a quiz to test your knowledge. Complete the quiz to track your progress and work towards your certificate.
+                                </p>
+                                <Button
+                                    size="lg"
+                                    className="bg-blue-600 hover:bg-blue-700 px-10 py-6 text-lg font-bold rounded-xl shadow-xl shadow-blue-900/20"
+                                    onClick={() => navigate(`/student/quizzes/${id}`)}
                                 >
-                                    Your browser does not support the video tag.
-                                </video>
-                                <div className="bg-slate-900/90 text-white text-xs px-3 py-2 flex items-center justify-between">
-                                    <span>
-                                        Watched {Math.round((Math.min(watchedSeconds, videoDuration || watchedSeconds) / (videoDuration || 1)) * 100)}%
-                                    </span>
-                                    <div className="flex items-center gap-2">
-                                        <span>Speed</span>
-                                        <select
-                                            className="bg-slate-800 border border-slate-700 rounded px-1 py-0.5"
-                                            value={playbackRate}
-                                            onChange={(e) => handlePlaybackRateChange(Number(e.target.value))}
+                                    Start Quiz <Icon name="ChevronRight" size={20} className="ml-2" />
+                                </Button>
+                            </div>
+                        ) : isDirectVideoFile(playableVideoUrl) ? (
+                            <div 
+                                ref={playerContainerRef}
+                                className={`w-full bg-black rounded-xl overflow-hidden shadow-2xl relative flex flex-col group/player ${isFullscreen ? 'h-screen rounded-none' : 'aspect-video'}`}
+                            >
+                                <div className="flex-1 relative min-h-0 bg-black flex items-center justify-center">
+                                    <video
+                                        ref={videoRef}
+                                        key={activeVideo._id}
+                                        className="w-full h-full object-contain cursor-pointer"
+                                        src={playableVideoUrl}
+                                        onContextMenu={(e) => e.preventDefault()}
+                                        preload="metadata"
+                                        onLoadStart={() => setVideoLoading(true)}
+                                        onCanPlay={() => setVideoLoading(false)}
+                                        onWaiting={() => setVideoLoading(true)}
+                                        onPlaying={() => {
+                                            setVideoLoading(false);
+                                            setIsPlaying(true);
+                                        }}
+                                        onPause={() => setIsPlaying(false)}
+                                        onLoadedMetadata={() => {
+                                            if (videoRef.current) {
+                                                setVideoDuration(Number(videoRef.current.duration || 0));
+                                                videoRef.current.playbackRate = playbackRate;
+                                            }
+                                        }}
+                                        onTimeUpdate={handleTimeUpdate}
+                                        onEnded={() => {
+                                            syncVideoProgress({ force: true, accessed: false, ended: true });
+                                            setIsPlaying(false);
+                                        }}
+                                        onClick={togglePlay}
+                                    >
+                                        Your browser does not support the video tag.
+                                    </video>
+
+                                    {/* Center Play/Pause Indicator (Large) */}
+                                    <div 
+                                        className={`absolute inset-0 flex items-center justify-center pointer-events-none transition-opacity duration-300 ${!isPlaying ? 'opacity-100' : 'opacity-0'}`}
+                                    >
+                                        <button 
+                                            className="w-20 h-20 bg-blue-600/80 rounded-full flex items-center justify-center text-white backdrop-blur-sm pointer-events-auto"
+                                            onClick={togglePlay}
                                         >
-                                            <option value={1}>1x</option>
-                                            <option value={1.5}>1.5x</option>
-                                            <option value={2}>2x</option>
-                                        </select>
+                                            <Icon name={isPlaying ? "Pause" : "Play"} size={32} className={!isPlaying ? "ml-1" : ""} />
+                                        </button>
+                                    </div>
+
+                                    {videoLoading && (
+                                        <div className="absolute inset-0 flex items-center justify-center bg-black/40 z-20 pointer-events-none">
+                                            <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+                                        </div>
+                                    )}
+                                </div>
+
+                                {/* Custom Control Bar - REDESIGNED FOR VISIBILITY */}
+                                <div className={`absolute bottom-0 left-0 right-0 bg-black/70 backdrop-blur-md border-t border-white/10 transition-all duration-300 p-3 z-30 ${!showControls && isPlaying ? 'opacity-0 translate-y-4 pointer-events-none' : 'opacity-100 translate-y-0 pointer-events-auto'}`}>
+                                    {/* Scrubber at the top of the bar */}
+                                    <div className="relative w-full h-1 group/scrubber mb-3 cursor-pointer">
+                                        <input 
+                                            type="range"
+                                            min="0"
+                                            max={videoDuration || 0}
+                                            value={watchedSeconds}
+                                            onChange={(e) => {
+                                                const time = Number(e.target.value);
+                                                if (videoRef.current) videoRef.current.currentTime = time;
+                                            }}
+                                            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                                        />
+                                        <div className="absolute inset-0 bg-white/20 rounded-full"></div>
+                                        <div 
+                                            className="absolute inset-y-0 left-0 bg-blue-500 rounded-full transition-all"
+                                            style={{ width: `${(watchedSeconds / (videoDuration || 1)) * 100}%` }}
+                                        ></div>
+                                        <div 
+                                            className="absolute top-1/2 -translate-y-1/2 h-3 w-3 bg-white rounded-full shadow-lg opacity-0 group-hover/scrubber:opacity-100 transition-opacity"
+                                            style={{ left: `${(watchedSeconds / (videoDuration || 1)) * 100}%` }}
+                                        ></div>
+                                    </div>
+
+                                    <div className="flex items-center justify-between gap-2">
+                                        <div className="flex items-center gap-2">
+                                            <button onClick={togglePlay} className="text-white hover:text-blue-400 transition-colors">
+                                                <Icon name={isPlaying ? "Pause" : "Play"} size={22} fill="currentColor" />
+                                            </button>
+
+                                            <div className="flex items-center gap-0.5">
+                                                <button 
+                                                    className="p-1 text-white/70 hover:text-white flex flex-col items-center min-w-[32px]"
+                                                    onClick={() => { if(videoRef.current) videoRef.current.currentTime -= 10; }}
+                                                    title="Back 10s"
+                                                >
+                                                    <Icon name="RotateCcw" size={14} />
+                                                    <span className="text-[8px] font-black leading-none mt-0.5 uppercase">10S</span>
+                                                </button>
+                                                <button 
+                                                    className="p-1 text-white/70 hover:text-white flex flex-col items-center min-w-[32px]"
+                                                    onClick={() => { if(videoRef.current) videoRef.current.currentTime -= 5; }}
+                                                    title="Back 5s"
+                                                >
+                                                    <Icon name="History" size={14} />
+                                                    <span className="text-[8px] font-black leading-none mt-0.5 uppercase">5S</span>
+                                                </button>
+                                                <button 
+                                                    className="p-1 text-white/70 hover:text-white flex flex-col items-center min-w-[32px]"
+                                                    onClick={() => { if(videoRef.current) videoRef.current.currentTime += 5; }}
+                                                    title="Forward 5s"
+                                                >
+                                                    <Icon name="ChevronRight" size={14} />
+                                                    <span className="text-[8px] font-black leading-none mt-0.5 uppercase">5S</span>
+                                                </button>
+                                                <button 
+                                                    className="p-1 text-white/70 hover:text-white flex flex-col items-center min-w-[32px]"
+                                                    onClick={() => { if(videoRef.current) videoRef.current.currentTime += 10; }}
+                                                    title="Forward 10s"
+                                                >
+                                                    <Icon name="RotateCw" size={14} />
+                                                    <span className="text-[8px] font-black leading-none mt-0.5 uppercase">10S</span>
+                                                </button>
+                                            </div>
+
+                                            <div className="flex items-center gap-1.5 group/volume ml-1">
+                                                <button 
+                                                    onClick={() => {
+                                                        const m = !isMuted;
+                                                        setIsMuted(m);
+                                                        if (videoRef.current) videoRef.current.muted = m;
+                                                    }}
+                                                    className="text-white/80 hover:text-white"
+                                                >
+                                                    <Icon name={isMuted || volume === 0 ? "VolumeX" : volume < 0.5 ? "Volume1" : "Volume2"} size={18} />
+                                                </button>
+                                                <input 
+                                                    type="range"
+                                                    min="0"
+                                                    max="1"
+                                                    step="0.05"
+                                                    value={isMuted ? 0 : volume}
+                                                    onChange={(e) => {
+                                                        const v = Number(e.target.value);
+                                                        setVolume(v);
+                                                        setIsMuted(v === 0);
+                                                        if (videoRef.current) {
+                                                            videoRef.current.volume = v;
+                                                            videoRef.current.muted = v === 0;
+                                                        }
+                                                    }}
+                                                    className="w-0 group-hover/volume:w-16 transition-all duration-300 accent-blue-500 h-1 cursor-pointer opacity-0 group-hover/volume:opacity-100"
+                                                />
+                                            </div>
+
+                                            <div className="text-[10px] font-mono font-bold text-white/80 border-l border-white/10 pl-2">
+                                                {formatTime(watchedSeconds)} <span className="text-white/20">/</span> {formatTime(videoDuration)}
+                                            </div>
+                                        </div>
+
+                                        <div className="flex items-center gap-2">
+                                            <div className="flex items-center gap-1 border-l border-white/10 pl-2">
+                                                <button 
+                                                    className="p-1.5 text-white/60 hover:text-white transition-colors"
+                                                    onClick={() => {
+                                                        const idx = playlist.findIndex(v => v._id === activeVideo._id);
+                                                        if (idx > 0) handleVideoSelect(playlist[idx - 1]);
+                                                    }}
+                                                    title="Prev Module"
+                                                >
+                                                    <Icon name="SkipBack" size={16} />
+                                                </button>
+                                                <button 
+                                                    className="p-1.5 px-3 bg-blue-600 hover:bg-blue-700 text-white rounded text-[10px] font-black flex items-center gap-1.5 transition-all shadow-lg shadow-blue-900/40 uppercase"
+                                                    onClick={() => {
+                                                        const idx = playlist.findIndex(v => v._id === activeVideo._id);
+                                                        if (idx < playlist.length - 1) handleVideoSelect(playlist[idx + 1]);
+                                                    }}
+                                                >
+                                                    NEXT <Icon name="SkipForward" size={12} fill="currentColor" />
+                                                </button>
+                                            </div>
+
+                                            <div className="flex items-center gap-2 border-l border-white/10 pl-2">
+                                                <div className="flex flex-col items-center">
+                                                    <select
+                                                        className="bg-transparent border-none text-[10px] font-bold text-blue-400 outline-none cursor-pointer hover:text-white appearance-none h-4"
+                                                        value={playbackRate}
+                                                        onChange={(e) => handlePlaybackRateChange(Number(e.target.value))}
+                                                    >
+                                                        <option value={1}>1X</option>
+                                                        <option value={1.5}>1.5X</option>
+                                                        <option value={2}>2X</option>
+                                                    </select>
+                                                    <span className="text-[5px] text-white/30 font-black tracking-widest leading-none">SPEED</span>
+                                                </div>
+                                                <button onClick={toggleFullscreen} className="text-white/70 hover:text-white transition-all hover:scale-110 ml-1">
+                                                    <Icon name={isFullscreen ? "Minimize" : "Maximize"} size={18} />
+                                                </button>
+                                            </div>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -303,9 +569,10 @@ const LearningPage = () => {
                             ></iframe>
                         )
                     ) : (
-                        <div className="text-white text-center">
-                            <Icon name="PlayCircle" size="2xl" className="mx-auto mb-4 opacity-50" />
-                            <p>Select a video to start learning</p>
+                        <div className="text-white text-center p-8">
+                            <Icon name="PlayCircle" size={48} className="mx-auto mb-4 opacity-50 text-blue-400" />
+                            <h3 className="text-xl font-bold mb-1">Begin Your Session</h3>
+                            <p className="text-slate-500 text-sm">Select a module from the content list to start</p>
                         </div>
                     )}
                 </div>
@@ -373,15 +640,17 @@ const LearningPage = () => {
                 </div>
 
                 <div className="flex-1 overflow-y-auto p-4 space-y-3">
-                    {playlist.map((video, index) => (
+                    {playlist.map((item, index) => (
                         <VideoCard
-                            key={video._id}
-                            id={video._id}
-                            title={`Module ${video.moduleIndex}: ${video.moduleTitle} - ${video.title}`}
-                            duration={video.duration || '00:00'}
-                            isCompleted={completedVideos.includes(String(video._id))}
-                            isActive={activeVideo?._id === video._id}
-                            onClick={() => handleVideoSelect(video)}
+                            key={item._id}
+                            id={item._id}
+                            title={`${item.title}`}
+                            subtitle={`Module ${item.moduleIndex}: ${item.moduleTitle}`}
+                            duration={item.type === 'quiz' ? 'Assessment' : (item.duration || '00:00')}
+                            isCompleted={item.type === 'video' ? completedVideos.includes(String(item._id)) : false}
+                            isActive={activeVideo?._id === item._id}
+                            icon={item.type === 'quiz' ? 'HelpCircle' : 'Play'}
+                            onClick={() => handleVideoSelect(item)}
                         />
                     ))}
                 </div>
@@ -416,15 +685,15 @@ const LearningPage = () => {
                         </div>
                     )}
                     {courseData.quizzes?.length > 0 || courseData.modules?.some(m => m.content?.some(c => c.type === 'quiz')) ? (
-                        <Button 
-                            variant="outline" 
+                        <Button
+                            variant="outline"
                             className="w-full mb-2"
                             onClick={() => navigate(`/student/quizzes/${id}`)}
                         >
                             Take Course Quiz
                         </Button>
                     ) : null}
-                    <Button 
+                    <Button
                         className="w-full"
                         disabled={!canGetCertificate}
                         onClick={() => navigate('/student/certificates')}

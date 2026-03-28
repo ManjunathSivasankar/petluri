@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { S3Client, PutObjectCommand, GetObjectCommand, ListObjectVersionsCommand, DeleteObjectsCommand } = require('@aws-sdk/client-s3');
 
 const normalizeUrlBase = (value = '') => {
     const trimmed = String(value || '').trim();
@@ -27,6 +28,28 @@ const isBackblazeEnabled = () => {
     );
 };
 
+// Persistent S3 Client for B2
+let _s3Client = null;
+const getS3Client = () => {
+    if (_s3Client) return _s3Client;
+    
+    const cfg = getB2Config();
+    if (!cfg.endpoint || !cfg.keyId || !cfg.appKey) return null;
+
+    _s3Client = new S3Client({
+        region: cfg.region,
+        endpoint: cfg.endpoint,
+        forcePathStyle: false,
+        credentials: {
+            accessKeyId: cfg.keyId,
+            secretAccessKey: cfg.appKey
+        },
+        // Optimize for streaming
+        maxAttempts: 3
+    });
+    return _s3Client;
+};
+
 const toPublicUrlFromLocalPath = (filePath) => {
     const normalizedPath = filePath.replace(/\\/g, '/');
     const match = normalizedPath.match(/public\/(.*)/);
@@ -37,34 +60,17 @@ const toPublicUrlFromLocalPath = (filePath) => {
 const uploadVideoFile = async (file) => {
     if (!file) throw new Error('No file provided for upload');
 
-    const toLocalPayload = () => ({
-        provider: 'local',
-        url: toPublicUrlFromLocalPath(file.path),
-        key: file.filename,
-        fileName: file.originalname,
-        fileSizeBytes: file.size
-    });
-
     if (!isBackblazeEnabled()) {
-        return toLocalPayload();
+        throw new Error('Backblaze B2 is not configured. Local video storage is disabled.');
     }
 
-    const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
     const cfg = getB2Config();
-    const endpoint = cfg.endpoint;
+    const client = getS3Client();
+    if (!client) throw new Error('Failed to initialize B2 client');
+
     const bucket = cfg.bucket;
     const keyPrefix = process.env.B2_VIDEO_PREFIX || 'videos';
     const key = `${keyPrefix}/${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname)}`;
-
-    const client = new S3Client({
-        region: cfg.region,
-        endpoint,
-        forcePathStyle: true,
-        credentials: {
-            accessKeyId: cfg.keyId,
-            secretAccessKey: cfg.appKey
-        }
-    });
 
     const fileBuffer = fs.readFileSync(file.path);
 
@@ -76,11 +82,10 @@ const uploadVideoFile = async (file) => {
             ContentType: file.mimetype || 'video/mp4'
         }));
     } catch (error) {
-        console.error('Backblaze upload failed, falling back to local storage:', error.message);
-        return toLocalPayload();
+        throw new Error(`Backblaze B2 upload failed: ${error.message}`);
     }
 
-    const publicBase = cfg.publicBaseUrl || `${endpoint}/${bucket}`;
+    const publicBase = cfg.publicBaseUrl || `${cfg.endpoint}/${bucket}`;
     const url = `${publicBase}/${key}`;
 
     try {
@@ -98,36 +103,62 @@ const uploadVideoFile = async (file) => {
     };
 };
 
-const deleteVideoFile = async ({ provider = 'local', key = '', url = '' }) => {
-    if (provider === 'backblaze' && key && isBackblazeEnabled()) {
-        const { S3Client, DeleteObjectCommand } = require('@aws-sdk/client-s3');
-        const cfg = getB2Config();
-        const client = new S3Client({
-            region: cfg.region,
-            endpoint: cfg.endpoint,
-            forcePathStyle: true,
-            credentials: {
-                accessKeyId: cfg.keyId,
-                secretAccessKey: cfg.appKey
-            }
-        });
+const deleteVideoFile = async ({ key = '' }) => {
+    if (!key || !isBackblazeEnabled()) return;
 
-        await client.send(new DeleteObjectCommand({
+    const client = getS3Client();
+    if (!client) return;
+    
+    const cfg = getB2Config();
+
+    try {
+        const versions = await client.send(new ListObjectVersionsCommand({
             Bucket: cfg.bucket,
-            Key: key
+            Prefix: key
         }));
-        return;
+
+        const toDelete = (versions.Versions || [])
+            .filter(v => v.Key === key)
+            .map(v => ({ Key: v.Key, VersionId: v.VersionId }));
+            
+        const markers = (versions.DeleteMarkers || [])
+            .filter(m => m.Key === key)
+            .map(m => ({ Key: m.Key, VersionId: m.VersionId }));
+
+        const allVersions = [...toDelete, ...markers];
+
+        if (allVersions.length > 0) {
+            await client.send(new DeleteObjectsCommand({
+                Bucket: cfg.bucket,
+                Delete: { Objects: allVersions }
+            }));
+            console.log(`Permanently deleted ${allVersions.length} versions/markers of ${key}`);
+        }
+    } catch (error) {
+        console.error(`Failed to permanently delete B2 file ${key}:`, error.message);
+    }
+};
+
+const streamVideoFile = async ({ key, range }) => {
+    if (!key || !isBackblazeEnabled()) {
+        throw new Error('Backblaze B2 is not enabled or key is missing');
     }
 
-    if (url && url.startsWith('/uploads/')) {
-        const localPath = path.join(__dirname, '..', 'public', url.replace(/^\//, ''));
-        if (fs.existsSync(localPath)) {
-            fs.unlinkSync(localPath);
-        }
-    }
+    const client = getS3Client();
+    if (!client) throw new Error('B2 S3 Client not initialized');
+
+    const cfg = getB2Config();
+    const command = new GetObjectCommand({
+        Bucket: cfg.bucket,
+        Key: key,
+        Range: range
+    });
+
+    return await client.send(command);
 };
 
 module.exports = {
     uploadVideoFile,
-    deleteVideoFile
+    deleteVideoFile,
+    streamVideoFile
 };

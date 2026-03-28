@@ -194,7 +194,8 @@ const InviteStudentsPage = () => {
                     <table className="w-full text-xs text-left">
                         <thead className="bg-slate-50 text-slate-500 font-bold uppercase border-b border-slate-100">
                             <tr>
-                                <th className="p-3 pl-4">Name</th>
+                                <th className="p-3 pl-4">ID</th>
+                                <th className="p-3">Name</th>
                                 <th className="p-3">Email</th>
                                 <th className="p-3">Program</th>
                                 <th className="p-3">Invited Date</th>
@@ -219,7 +220,8 @@ const InviteStudentsPage = () => {
 
                                     return (
                                         <tr key={row._id || row.id}>
-                                            <td className="p-3 pl-4 font-bold text-slate-700 uppercase">{row.name}</td>
+                                            <td className="p-3 pl-4 font-mono font-bold text-slate-600">{row.studentId || 'N/A'}</td>
+                                            <td className="p-3 font-bold text-slate-700 uppercase">{row.name}</td>
                                             <td className="p-3 text-slate-500">{row.email}</td>
                                             <td className="p-3">
                                                 <span className={cn(

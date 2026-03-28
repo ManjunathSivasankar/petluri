@@ -67,7 +67,7 @@ const StudentDashboard = () => {
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                         {enrolledCourses.map((course) => (
                             <div key={course._id} className="h-full">
-                                <CourseCard course={course} type="free" isEnrolled={true} />
+                                <CourseCard course={course} type={course.courseId?.type || 'professional'} isEnrolled={true} />
                             </div>
                         ))}
                     </div>

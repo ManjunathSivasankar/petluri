@@ -135,11 +135,15 @@ exports.verifyPayment = async (req, res) => {
             .digest("hex");
 
         if (razorpay_signature !== expectedSign) {
-            console.warn("Signature mismatch!");
-            return res.status(400).json({ message: 'Invalid payment signature' });
+            console.error("[Verify] Signature mismatch! Possible RAZORPAY_KEY_SECRET issue or corrupted payload.");
+            return res.status(400).json({ 
+                success: false, 
+                message: 'Invalid payment signature', 
+                error: 'Verification failed. Please contact support if this continues.' 
+            });
         }
 
-        console.log("Signature verified.");
+        console.log("[Verify] Signature verified.");
 
         const course = await Course.findById(courseId);
         if (!course) {
@@ -172,13 +176,21 @@ exports.verifyPayment = async (req, res) => {
             });
             console.log(`User created successfully: ${user._id}`);
         } else {
-            console.log("Existing user found, updating details...");
+            console.log(`[Verify] Existing user found: ${user.email}`);
             user.phone = userDetails.phone || user.phone;
             user.collegeName = userDetails.collegeName || user.collegeName;
             user.collegeDetails = userDetails.collegeDetails || user.collegeDetails;
             user.personalAddress = userDetails.personalAddress || user.personalAddress;
+
+            // BUG FIX: Ensure user has studentId if created before the logic was added
+            if (!user.studentId) {
+                console.log("[Verify] Missing studentId for existing user. Generating...");
+                const { generateStudentId } = require('../services/idService');
+                user.studentId = await generateStudentId();
+            }
+
             await user.save();
-            console.log(`User updated: ${user._id}`);
+            console.log(`[Verify] User updated: ${user._id} | studentId: ${user.studentId}`);
             password = user.tempPassword || 'Enrolled with your existing password';
         }
 
@@ -202,20 +214,37 @@ exports.verifyPayment = async (req, res) => {
         console.log("Creating enrollment record...");
         const existingEnrollment = await Enrollment.findOne({ userId: user._id, courseId: course._id });
         if (!existingEnrollment) {
+            // Generate Enrollment ID (Format: studentId-NN)
+            const Counter = require('../models/Counter');
+            const counterKey = `enrollment_${user.studentId}`;
+            const counter = await Counter.findOneAndUpdate(
+                { _id: counterKey },
+                { $inc: { seq: 1 }, type: 'enrollment' },
+                { upsert: true, new: true }
+            );
+            const enrollmentId = `${user.studentId}-${String(counter.seq).padStart(2, '0')}`;
+
             await Enrollment.create({
+                enrollmentId,
                 userId: user._id,
                 courseId: course._id
             });
-            console.log("Enrollment created.");
+            console.log(`Enrollment ${enrollmentId} created.`);
         } else {
             console.log("User already enrolled.");
         }
 
         res.status(200).json({ message: 'Payment verified and enrollment successful', success: true });
     } catch (error) {
-        console.error("Verification error crash:", error);
+        console.error("CRITICAL: Verification error crash:", error);
         console.error(error.stack);
-        res.status(500).json({ message: 'Verification failed', error: error.message });
+        // Return a combined message for better visibility in simple frontend handlers
+        const errorDetail = error.code === 11000 ? "Conflict: Already enrolled or ID collision." : error.message;
+        res.status(500).json({ 
+            success: false, 
+            message: `Server-side verification failed: ${errorDetail}`, 
+            error: error.message 
+        });
     }
 };
 
@@ -270,10 +299,22 @@ exports.enrollFree = async (req, res) => {
         // Create Enrollment
         const existingEnrollment = await Enrollment.findOne({ userId: user._id, courseId: course._id });
         if (!existingEnrollment) {
+            // Generate Enrollment ID (Format: studentId-NN)
+            const Counter = require('../models/Counter');
+            const counterKey = `enrollment_${user.studentId}`;
+            const counter = await Counter.findOneAndUpdate(
+                { _id: counterKey },
+                { $inc: { seq: 1 }, type: 'enrollment' },
+                { upsert: true, new: true }
+            );
+            const enrollmentId = `${user.studentId}-${String(counter.seq).padStart(2, '0')}`;
+
             await Enrollment.create({
+                enrollmentId,
                 userId: user._id,
                 courseId: course._id
             });
+            console.log(`Free Enrollment ${enrollmentId} created.`);
         }
 
         res.status(200).json({ message: 'Free enrollment successful', success: true });

@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/Card';
 import { X, Loader2 } from 'lucide-react';
 import api from '@/lib/api';
+import { Icon } from '@/components/ui/Icon';
 import { loadRazorpay } from '@/components/utils/loadRazorpay';
 import { useNavigate } from 'react-router-dom';
 
@@ -63,6 +64,8 @@ const EnrollmentFormModal = ({ isOpen, onClose, course, initialUser = null }) =>
         setFormData(prev => ({ ...prev, [name]: value }));
     };
 
+    const [isSuccess, setIsSuccess] = useState(false);
+
     const handleSubmit = async (e) => {
         e.preventDefault();
         setError(null);
@@ -77,9 +80,7 @@ const EnrollmentFormModal = ({ isOpen, onClose, course, initialUser = null }) =>
                 });
 
                 if (res.data.success) {
-                    alert("Enrolled successfully in free course! Check your email for login details if you're a new user.");
-                    onClose();
-                    navigate('/login');
+                    setIsSuccess(true);
                 }
                 return;
             }
@@ -100,7 +101,7 @@ const EnrollmentFormModal = ({ isOpen, onClose, course, initialUser = null }) =>
             const { amount, id: order_id, currency } = orderRes.data;
 
             const options = {
-                key: import.meta.env.VITE_RAZORPAY_KEY_ID || 'dummy_key', // Ensure this is available in frontend env
+                key: import.meta.env.VITE_RAZORPAY_KEY_ID || 'dummy_key',
                 amount: amount.toString(),
                 currency: currency,
                 name: 'Petluri Edutech',
@@ -117,15 +118,15 @@ const EnrollmentFormModal = ({ isOpen, onClose, course, initialUser = null }) =>
                         });
 
                         if (verifyRes.data.success) {
-                            alert("Enrollment Successful! Check email for credentials if you are a new user.");
-                            onClose();
-                            navigate('/login');
+                            setIsSuccess(true);
                         } else {
                             setError("Payment verification failed.");
                         }
                     } catch (error) {
                         console.error("Verification Error", error);
-                        setError("Payment verification failed on server.");
+                        const data = error.response?.data;
+                        const serverMsg = data?.message || data?.error || error.message || "Payment verification failed on server.";
+                        setError(serverMsg);
                     }
                 },
                 prefill: {
@@ -154,6 +155,58 @@ const EnrollmentFormModal = ({ isOpen, onClose, course, initialUser = null }) =>
     };
 
     if (!isOpen) return null;
+
+    if (isSuccess) {
+        return (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+                <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden transform transition-all animate-in fade-in zoom-in duration-300">
+                    <div className="bg-blue-600 p-8 text-center">
+                        <div className="w-20 h-20 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-4 border-2 border-white/30">
+                            <Icon name="Check" size={40} className="text-white" />
+                        </div>
+                        <h2 className="text-2xl font-bold text-white mb-2">Enrollment Successful!</h2>
+                        <p className="text-blue-100 italic">Welcome to the Petluri Edutech Family</p>
+                    </div>
+                    
+                    <CardContent className="p-8 space-y-6">
+                        <div className="space-y-3">
+                            <p className="text-slate-600 text-center">
+                                You have successfully enrolled in:
+                                <span className="block font-bold text-slate-900 mt-1 text-lg">{course.title}</span>
+                            </p>
+                            
+                            <div className="bg-slate-50 rounded-xl p-4 border border-slate-100">
+                                <h4 className="text-sm font-bold text-slate-800 mb-2 flex items-center gap-2">
+                                    <Icon name="Mail" size={16} className="text-blue-500" />
+                                    Next Steps:
+                                </h4>
+                                <ul className="text-sm text-slate-600 space-y-2">
+                                    <li className="flex items-start gap-2">
+                                        <div className="w-1.5 h-1.5 rounded-full bg-blue-400 mt-1.5"></div>
+                                        <span>Check your email <b>{formData.email}</b> for login OTP.</span>
+                                    </li>
+                                    <li className="flex items-start gap-2">
+                                        <div className="w-1.5 h-1.5 rounded-full bg-blue-400 mt-1.5"></div>
+                                        <span>Your Student ID is being prepared.</span>
+                                    </li>
+                                </ul>
+                            </div>
+                        </div>
+
+                        <Button 
+                            className="w-full h-12 bg-blue-600 hover:bg-blue-700 text-base font-bold shadow-lg shadow-blue-200"
+                            onClick={() => {
+                                onClose();
+                                navigate('/login');
+                            }}
+                        >
+                            Log In to Your Dashboard
+                        </Button>
+                    </CardContent>
+                </div>
+            </div>
+        );
+    }
 
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 overflow-y-auto pt-10 pb-10">

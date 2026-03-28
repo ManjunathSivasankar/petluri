@@ -4,7 +4,8 @@ const internshipCertificateSchema = new mongoose.Schema({
     certificateId: {
         type: String,
         required: true,
-        unique: true // e.g., "INT-CERT-12345"
+        unique: true,
+        index: true
     },
     userId: {
         type: mongoose.Schema.Types.ObjectId,

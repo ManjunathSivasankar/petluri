@@ -178,6 +178,7 @@ const EnrollmentsPage = () => {
                                 <th className="p-4 w-4">
                                     <input type="checkbox" onChange={handleSelectAll} checked={selectedRows.length === enrollments.length && enrollments.length > 0} />
                                 </th>
+                                <th className="p-4 min-w-[120px]">Enrollment ID</th>
                                 <th className="p-4 min-w-[120px]">Student ID</th>
                                 <th className="p-4 min-w-[150px]">Name</th>
                                 <th className="p-4 min-w-[200px]">Email</th>
@@ -187,6 +188,8 @@ const EnrollmentsPage = () => {
                                 <th className="p-4 min-w-[120px]">Type</th>
                                 <th className="p-4">Amount</th>
                                 <th className="p-4">Status</th>
+                                <th className="p-4">Certification</th>
+                                <th className="p-4">Internship</th>
                                 <th className="p-4">Progress</th>
                                 <th className="p-4">Completion</th>
                                 <th className="p-4">Feedback</th>
@@ -210,7 +213,7 @@ const EnrollmentsPage = () => {
                                     const dateObj = row.paymentDetails?.createdAt || row.createdAt;
                                     const dateDisplay = dateObj ? new Date(dateObj).toLocaleDateString('en-GB') : '-';
 
-                                    const studentId = row.userId?._id ? `PETLURI-${row.userId._id.toString().slice(-4).toUpperCase()}` : 'N/A';
+                                    const studentId = row.userId?.studentId || 'N/A';
                                     const amountStr = row.paymentDetails?.amount ? `₹${row.paymentDetails.amount}` : (row.courseId?.price ? `₹${row.courseId.price}` : 'Free');
                                     let statusStr = row.paymentDetails?.status || row.status || 'unknown';
                                     if (statusStr === 'successful') statusStr = 'Paid';
@@ -225,6 +228,7 @@ const EnrollmentsPage = () => {
                                                     onChange={() => handleSelectRow(row._id)}
                                                 />
                                             </td>
+                                            <td className="p-4 font-mono text-sm text-blue-600 font-bold">{row.enrollmentId || 'N/A'}</td>
                                             <td className="p-4 font-mono text-sm text-slate-600">{studentId}</td>
                                             <td className="p-4 font-semibold text-slate-900">{row.userId?.name || 'Unknown'}</td>
                                             <td className="p-4 text-slate-700">{row.userId?.email || 'N/A'}</td>
@@ -258,6 +262,20 @@ const EnrollmentsPage = () => {
                                                     <option value="pending">Pending</option>
                                                     <option value="completed">Completed</option>
                                                 </select>
+                                            </td>
+                                            <td className="p-4">
+                                                {row.certificate ? (
+                                                    <Badge variant="success" className="text-[10px]">Issued</Badge>
+                                                ) : (
+                                                    <span className="text-slate-400 text-xs">Pending</span>
+                                                )}
+                                            </td>
+                                            <td className="p-4">
+                                                <div className="flex flex-col gap-1">
+                                                    {row.internshipOffer && <Badge variant="secondary" className="text-[10px] w-fit">Offer Sent</Badge>}
+                                                    {row.internshipCertificate && <Badge variant="success" className="text-[10px] w-fit">Cert Issued</Badge>}
+                                                    {!row.internshipOffer && !row.internshipCertificate && <span className="text-slate-400 text-xs">N/A</span>}
+                                                </div>
                                             </td>
                                             <td className="p-4 font-semibold text-slate-700">{row.completionPercentage || 0}%</td>
                                             <td className="p-4">
@@ -319,7 +337,7 @@ const EnrollmentsPage = () => {
                         <div>
                             <h2 className="text-lg font-bold text-slate-900">Enrollment Monitoring Details</h2>
                             <p className="text-sm text-slate-500">
-                                {selectedEnrollmentDetails.student?.name} ({selectedEnrollmentDetails.student?.email})
+                                {selectedEnrollmentDetails.student?.name} ({selectedEnrollmentDetails.student?.studentId || 'No ID'}) | {selectedEnrollmentDetails.student?.email}
                             </p>
                         </div>
                         {loadingDetails && <span className="text-xs text-slate-500">Loading...</span>}

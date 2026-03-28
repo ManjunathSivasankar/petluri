@@ -6,6 +6,7 @@ const InternshipCertificate = require('../models/InternshipCertificate');
 const InternshipOffer = require('../models/InternshipOffer');
 const { issueCertificate } = require('../services/certificateService');
 const { issueInternshipCertificate } = require('../services/internshipDocumentService');
+const { getSignedDownloadUrl, streamVideoFile } = require('../services/videoStorageService');
 
 const VIDEO_COMPLETION_THRESHOLD = 0.95;
 
@@ -239,16 +240,33 @@ const getDashboard = async (req, res) => {
                 name: req.user.name,
                 email: req.user.email
             },
-            enrolledCourses: validEnrollments.map(enrollment => ({
-                _id: enrollment.courseId._id,
-                title: enrollment.courseId.title,
-                description: enrollment.courseId.description,
-                duration: enrollment.courseId.duration,
-                level: enrollment.courseId.level,
-                image: enrollment.courseId.image,
-                progress: enrollment.completionPercentage,
-                status: enrollment.status,
-                certificateIssued: enrollment.certificateIssued
+            enrolledCourses: await Promise.all(validEnrollments.map(async (enrollment) => {
+                const c = enrollment.courseId;
+                // Sign URLs for course content if needed
+                if (c.modules) {
+                    for (let mod of c.modules) {
+                        if (mod.content) {
+                            for (let item of mod.content) {
+                                if (item.type === 'video' && item.storageProvider === 'backblaze') {
+                                    item.url = `/api/student/video/stream/${c._id}/${mod._id}/${item._id}`;
+                                }
+                            }
+                        }
+                    }
+                }
+                return {
+                    _id: c._id,
+                    enrollmentId: enrollment.enrollmentId,
+                    programId: c.programId || c.courseCode, // Primary ID from Course
+                    title: c.title,
+                    description: c.description,
+                    duration: c.duration,
+                    level: c.level,
+                    image: c.image,
+                    progress: enrollment.completionPercentage,
+                    status: enrollment.status,
+                    certificateIssued: enrollment.certificateIssued
+                };
             })),
             stats: {
                 totalEnrolled: validEnrollments.length,
@@ -271,13 +289,29 @@ const getMyCourses = async (req, res) => {
         const enrollments = await Enrollment.find({ userId: req.user._id })
             .populate('courseId');
 
-        const courses = enrollments
+        const courses = await Promise.all(enrollments
             .filter(enrollment => enrollment.courseId)
-            .map(enrollment => ({
-                ...enrollment.courseId._doc,
-                progress: enrollment.completionPercentage,
-                status: enrollment.status,
-                enrolledAt: enrollment.enrolledAt
+            .map(async (enrollment) => {
+                const course = enrollment.courseId;
+                if (course.modules) {
+                    for (let mod of course.modules) {
+                        if (mod.content) {
+                            for (let item of mod.content) {
+                                if (item.type === 'video' && item.storageProvider === 'backblaze') {
+                                    item.url = `/api/student/video/stream/${course._id}/${mod._id}/${item._id}`;
+                                }
+                            }
+                        }
+                    }
+                }
+                return {
+                    ...course._doc,
+                    enrollmentId: enrollment.enrollmentId,
+                    programId: course.programId || course.courseCode,
+                    progress: enrollment.completionPercentage,
+                    status: enrollment.status,
+                    enrolledAt: enrollment.enrolledAt
+                };
             }));
 
         res.json(courses);
@@ -313,10 +347,24 @@ const getCourseDetails = async (req, res) => {
                 select: 'title timeLimit passingScore questions'
             });
 
+        // Enrich ALL video URLs with fresh stream URLs if hosted on B2
+        if (course.modules) {
+            course.modules.forEach(mod => {
+                if (mod.content) {
+                    mod.content.forEach(item => {
+                        if (item.type === 'video' && item.storageProvider === 'backblaze') {
+                            item.url = `/api/student/video/stream/${course._id}/${mod._id}/${item._id}`;
+                        }
+                    });
+                }
+            });
+        }
+
         res.json({
             course,
             progress: enrollment.progress,
             status: enrollment.status,
+            enrollmentId: enrollment.enrollmentId, // Include for UI
             completionPercentage: enrollment.completionPercentage,
             progressSummary: buildProgressSummary(course, enrollment),
             quizResults: getQuizResultSummary(enrollment),
@@ -757,6 +805,53 @@ const downloadInternshipCertificate = async (req, res) => {
     }
 };
 
+// @desc    Proxy video stream for enrolled students
+// @route   GET /api/student/video/stream/:courseId/:moduleId/:videoId
+// @access  Private/Student
+const proxyVideo = async (req, res) => {
+    try {
+        const { courseId, moduleId, videoId } = req.params;
+        
+        // 1. Check enrollment
+        const enrollment = await Enrollment.findOne({ userId: req.user._id, courseId });
+        if (!enrollment) return res.status(403).send('Not enrolled in this course');
+
+        // 2. Fetch course data to get the storage key
+        const course = await Course.findById(courseId);
+        if (!course) return res.status(404).send('Course not found');
+
+        const mod = (course.modules || []).find(m => String(m._id) === moduleId);
+        if (!mod) return res.status(404).send('Module not found');
+
+        const video = (mod.content || []).find(c => c.type === 'video' && String(c._id) === videoId);
+        if (!video || !video.storageKey) return res.status(404).send('Video not found or no storage key');
+
+        if (video.storageProvider !== 'backblaze') {
+            return res.status(400).send('Only Backblaze videos can be proxied');
+        }
+
+        const range = req.headers.range;
+        const s3Response = await streamVideoFile({ key: video.storageKey, range });
+
+        // Forward headers from B2
+        if (s3Response.ContentType) res.setHeader('Content-Type', s3Response.ContentType);
+        if (s3Response.ContentLength) res.setHeader('Content-Length', s3Response.ContentLength);
+        if (s3Response.ContentRange) res.setHeader('Content-Range', s3Response.ContentRange);
+        if (s3Response.AcceptRanges) res.setHeader('Accept-Ranges', s3Response.AcceptRanges);
+        if (s3Response.ETag) res.setHeader('ETag', s3Response.ETag);
+
+        res.status(s3Response.$metadata.httpStatusCode || 200);
+
+        // Pipe the B2 stream to the express response
+        s3Response.Body.pipe(res);
+    } catch (error) {
+        console.error('[Student proxyVideo] Stream error:', error.message);
+        if (!res.headersSent) {
+            res.status(500).send(error.message);
+        }
+    }
+};
+
 module.exports = {
     getDashboard,
     getMyCourses,
@@ -769,5 +864,6 @@ module.exports = {
     getMyCertificates,
     downloadCertificate,
     getMyInternshipDocuments,
-    downloadInternshipCertificate
+    downloadInternshipCertificate,
+    proxyVideo
 };

@@ -9,12 +9,13 @@ const CourseCard = ({ course, type = 'professional', onEnrollClick, isEnrolled =
     const { title, description, duration, level, image, price } = course;
     const navigate = useNavigate();
 
-    // Derived or Default Data (Mocking missing fields based on UI requirement)
-    // In a real scenario, these should come from the backend.
-    const courseCode = course.courseCode || "EDZ-2026-cOU-463";
-    const mode = course.mode || "Hybrid";
-    const startDate = course.startDate || "06/02/2026";
-    const endDate = course.endDate || "04/03/2026";
+    // Real IDs from backend (fallback to courseCode if legacy)
+    const enrollmentId = course.enrollmentId; // e.g. PES2601-01
+    const programId = course.programId || course.courseCode || "N/A";
+    
+    const mode = course.mode || "Online";
+    const startDate = course.startDate || "Ongoing";
+    const endDate = course.endDate || "Flexible";
 
     // Status Logic
     const status = isEnrolled ? (course.progress === 100 ? "Completed" : "In Progress") : "Available";
@@ -34,15 +35,22 @@ const CourseCard = ({ course, type = 'professional', onEnrollClick, isEnrolled =
                     </Badge>
                 </div>
 
-                {/* 2. Course Code */}
-                <div className="text-xs text-slate-400 font-medium mb-2 uppercase tracking-wide">
-                    {courseCode}
-                </div>
+                {/* 2. Enrollment ID (Before Title) */}
+                {enrollmentId && (
+                    <div className="text-[10px] bg-blue-50 text-blue-600 font-bold px-2 py-0.5 rounded-sm inline-block w-fit mb-2 uppercase tracking-wider border border-blue-100">
+                        ID: {enrollmentId}
+                    </div>
+                )}
 
                 {/* 3. Title */}
-                <h3 className="text-xl font-bold text-slate-900 mb-3 leading-tight line-clamp-2">
+                <h3 className="text-xl font-bold text-slate-900 mb-1 leading-tight line-clamp-2">
                     {title}
                 </h3>
+                
+                {/* 4. Program ID (After Title) */}
+                <div className="text-[10px] text-slate-400 font-medium mb-4 uppercase tracking-widest">
+                    {programId}
+                </div>
 
                 {/* 4. Description */}
                 <p className="text-sm text-slate-500 mb-6 line-clamp-2 leading-relaxed">

@@ -1,6 +1,11 @@
 const mongoose = require('mongoose');
 
 const enrollmentSchema = new mongoose.Schema({
+    enrollmentId: {
+        type: String,
+        unique: true,
+        index: true
+    },
     userId: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User',

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Button } from '@/components/ui/Button';
 import { Icon } from '@/components/ui/Icon';
 import { Card, CardContent } from '@/components/ui/Card';
@@ -6,12 +6,40 @@ import { Label } from '@/components/ui/Label';
 import { Input } from '@/components/ui/Input';
 import api from '@/lib/api';
 import QuizModal from './QuizModal';
+import VideoPlayerModal from '@/components/ui/VideoPlayerModal';
 
-const ModuleEditor = ({ modules = [], setModules, quizzes = [], onQuizCreated }) => {
-    const [draggedItem, setDraggedItem] = useState(null); // { type: 'module'|'content', moduleIndex, contentIndex }
+const ModuleEditor = ({ modules = [], setModules, quizzes = [], onQuizCreated, highlightModule = null, programCode = '', courseTitle = '' }) => {
+    const [draggedItem, setDraggedItem] = useState(null);
     const [showQuizModal, setShowQuizModal] = useState(false);
     const [editingQuizId, setEditingQuizId] = useState(null);
-    const [activeQuizSlot, setActiveQuizSlot] = useState(null); // { moduleIndex, contentIndex }
+    const [activeQuizSlot, setActiveQuizSlot] = useState(null);
+    // upload progress: key = `${mIndex}_${cIndex}`, value = 0-100
+    const [uploadProgress, setUploadProgress] = useState({});
+    // video player modal
+    const [playerUrl, setPlayerUrl] = useState(null);
+    const [playerTitle, setPlayerTitle] = useState('');
+    
+    // Helper: Derive a descriptive prefix from course title (e.g. "Automation Testing" -> "AT")
+    const getCoursePrefix = (title) => {
+        if (!title) return 'PROG';
+        const words = title.trim().split(/\s+/).filter(w => w.length > 0);
+        if (words.length === 1) {
+            return words[0].slice(0, 3).toUpperCase();
+        }
+        return words.map(w => w[0]).join('').toUpperCase().slice(0, 4);
+    };
+
+    // Refs for scrolling to modules
+    const moduleRefs = useRef([]);
+
+    // Scroll to highlighted module
+    useEffect(() => {
+        if (highlightModule !== null && moduleRefs.current[highlightModule]) {
+            setTimeout(() => {
+                moduleRefs.current[highlightModule].scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }, 500); // Wait for data to render
+        }
+    }, [highlightModule]);
 
     const handleQuizCreated = (newQuiz) => {
         if (onQuizCreated) onQuizCreated(newQuiz);
@@ -85,24 +113,36 @@ const ModuleEditor = ({ modules = [], setModules, quizzes = [], onQuizCreated })
     };
 
     const handleVideoUpload = async (moduleIndex, contentIndex, file) => {
-        if (!file) {
-            console.error('No video file selected');
-            return;
-        }
-
+        if (!file) return;
+        const slotKey = `${moduleIndex}_${contentIndex}`;
         try {
             const formData = new FormData();
             formData.append('video', file);
+            setUploadProgress(prev => ({ ...prev, [slotKey]: 0 }));
 
-            const response = await api.post('/admin/upload-video', formData);
+            const response = await api.post('/admin/upload-video', formData, {
+                onUploadProgress: (evt) => {
+                    const pct = evt.total ? Math.round((evt.loaded / evt.total) * 100) : 0;
+                    setUploadProgress(prev => ({ ...prev, [slotKey]: pct }));
+                }
+            });
 
             const newModules = [...modules];
-            newModules[moduleIndex].content[contentIndex].url = response.data.url;
-            newModules[moduleIndex].content[contentIndex].title = file.name.replace(/\.[^/.]+$/, "");
-            newModules[moduleIndex].content[contentIndex].duration = "10:00";
+            const videoData = response.data;
+            newModules[moduleIndex].content[contentIndex].url = videoData.url;
+            newModules[moduleIndex].content[contentIndex].title = videoData.filename || file.name.replace(/\.[^/.]+$/, '');
+            newModules[moduleIndex].content[contentIndex].duration = '00:00';
+            newModules[moduleIndex].content[contentIndex].storageKey = videoData.storageKey || '';
+            newModules[moduleIndex].content[contentIndex].storageProvider = videoData.storageProvider || 'backblaze';
+            newModules[moduleIndex].content[contentIndex].fileSizeBytes = videoData.fileSizeBytes || file.size;
+            newModules[moduleIndex].content[contentIndex].uploadedAt = new Date().toISOString();
+            
             setModules(newModules);
         } catch (error) {
-            console.error("Upload failed", error.response?.data || error.message);
+            console.error('Upload failed', error.response?.data || error.message);
+            alert('Video upload failed: ' + (error.response?.data?.message || error.message));
+        } finally {
+            setUploadProgress(prev => { const n = { ...prev }; delete n[slotKey]; return n; });
         }
     };
 
@@ -164,8 +204,9 @@ const ModuleEditor = ({ modules = [], setModules, quizzes = [], onQuizCreated })
         <div className="space-y-6">
             {modules.map((module, mIndex) => (
                 <Card
-                    key={mIndex}
-                    className="bg-slate-50 border border-slate-200"
+                    key={module._id || mIndex}
+                    ref={el => moduleRefs.current[mIndex] = el}
+                    className={`bg-slate-50 border border-slate-200 shadow-sm transition-all duration-500 ${highlightModule === mIndex ? 'ring-2 ring-blue-500 ring-offset-2 animate-pulse-subtle' : ''}`}
                     draggable
                     onDragStart={(e) => handleModuleDragStart(e, mIndex)}
                     onDragOver={handleModuleDragOver}
@@ -230,17 +271,70 @@ const ModuleEditor = ({ modules = [], setModules, quizzes = [], onQuizCreated })
                                         <Input
                                             value={item.title}
                                             onChange={(e) => updateContent(mIndex, cIndex, 'title', e.target.value)}
-                                            placeholder="Content Title"
+                                            placeholder={item.type === 'video' ? "Video Name" : "Content Title"}
                                         />
 
                                         {item.type === 'video' ? (
-                                            <div className="flex gap-2">
-                                                <Input
-                                                    type="file"
-                                                    accept="video/*"
-                                                    onChange={(e) => handleVideoUpload(mIndex, cIndex, e.target.files[0])}
-                                                    className="text-xs"
-                                                />
+                                            <div className="space-y-1.5 flex-1">
+                                                    {!item.url ? (
+                                                        <div className="flex flex-col gap-2 w-full">
+                                                            <Input
+                                                                type="file"
+                                                                accept="video/*"
+                                                                onChange={(e) => handleVideoUpload(mIndex, cIndex, e.target.files[0])}
+                                                                className="text-xs"
+                                                                disabled={!!uploadProgress[`${mIndex}_${cIndex}`]}
+                                                            />
+                                                            <p className="text-[10px] text-slate-400 italic">MP4 recommended. Max size depends on server limits.</p>
+                                                        </div>
+                                                    ) : (
+                                                        <div className="flex-1 flex flex-col gap-2 p-3 bg-slate-50 border border-slate-200 rounded min-h-[80px]">
+                                                            <div className="flex items-center justify-between">
+                                                                <span className="flex items-center gap-2 text-xs text-green-600 font-bold uppercase tracking-wide">
+                                                                    <Icon name="Cloud" size={14} className="text-blue-500" />
+                                                                    Backblaze B2 Cloud
+                                                                </span>
+                                                                {item.fileSizeBytes && (
+                                                                    <span className="text-[10px] bg-slate-200 px-1.5 py-0.5 rounded text-slate-500 font-bold">
+                                                                        {(item.fileSizeBytes / (1024 * 1024)).toFixed(2)} MB
+                                                                    </span>
+                                                                )}
+                                                            </div>
+                                                            
+                                                            <div className="flex flex-col gap-1.5">
+                                                                <div className="flex items-center justify-between">
+                                                                    <span className="text-[10px] text-slate-400 uppercase tracking-tighter">Video ID</span>
+                                                                    <code className="bg-white border px-1.5 py-0.5 rounded text-[10px] font-mono font-bold text-slate-700">
+                                                                        {item.videoId || `${programCode || getCoursePrefix(courseTitle)}-M${mIndex + 1}-V1`}
+                                                                    </code>
+                                                                </div>
+                                                                
+                                                                {item.storageKey && (
+                                                                    <div className="flex items-center justify-between">
+                                                                        <span className="text-[10px] text-slate-400 uppercase tracking-tighter">Storage Key</span>
+                                                                        <code className="bg-white border px-1.5 py-0.5 rounded text-[10px] font-mono text-slate-500 truncate max-w-[120px]" title={item.storageKey}>
+                                                                            {item.storageKey}
+                                                                        </code>
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    )}
+                                                {/* Progress bar */}
+                                                {uploadProgress[`${mIndex}_${cIndex}`] !== undefined && (
+                                                    <div className="w-full">
+                                                        <div className="flex justify-between text-xs text-slate-500 mb-0.5">
+                                                            <span>Uploading…</span>
+                                                            <span>{uploadProgress[`${mIndex}_${cIndex}`]}%</span>
+                                                        </div>
+                                                        <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                                                            <div
+                                                                className="h-full bg-blue-500 rounded-full transition-all duration-200"
+                                                                style={{ width: `${uploadProgress[`${mIndex}_${cIndex}`]}%` }}
+                                                            />
+                                                        </div>
+                                                    </div>
+                                                )}
                                             </div>
                                         ) : (
                                             <div className="flex gap-2 w-full">
@@ -277,13 +371,22 @@ const ModuleEditor = ({ modules = [], setModules, quizzes = [], onQuizCreated })
                                                 variant="ghost"
                                                 size="sm"
                                                 onClick={() => {
-                                                    if (item.url) window.open(item.url, '_blank');
-                                                    else alert("No URL to preview");
+                                                    if (item.url) {
+                                                        // Use proxy for B2 videos to ensure playback
+                                                        const previewUrl = item.storageKey 
+                                                            ? `/api/admin/videos/stream-raw?key=${encodeURIComponent(item.storageKey)}`
+                                                            : item.url;
+                                                        setPlayerUrl(previewUrl);
+                                                        setPlayerTitle(item.title || 'Video Preview');
+                                                    } else {
+                                                        alert('No video uploaded yet for this slot.');
+                                                    }
                                                 }}
-                                                className="text-blue-500 hover:text-blue-700 hover:bg-blue-50"
-                                                title="Preview Video"
+                                                className={`${item.url ? 'text-blue-500 hover:text-blue-700 hover:bg-blue-50' : 'text-slate-300 cursor-not-allowed'}`}
+                                                title={item.url ? 'Preview Video' : 'No video yet'}
+                                                disabled={!item.url}
                                             >
-                                                <Icon name="Eye" size={16} />
+                                                <Icon name="Play" size={16} />
                                             </Button>
                                         ) : (
                                             <Button
@@ -343,9 +446,18 @@ const ModuleEditor = ({ modules = [], setModules, quizzes = [], onQuizCreated })
                     onClose={() => {
                         setShowQuizModal(false);
                         setEditingQuizId(null);
-                        setActiveQuizSlot(null); // Clear slot on close
+                        setActiveQuizSlot(null);
                     }}
                     onSuccess={handleQuizCreated}
+                />
+            )}
+
+            {/* In-app video player */}
+            {playerUrl && (
+                <VideoPlayerModal
+                    url={playerUrl}
+                    title={playerTitle}
+                    onClose={() => { setPlayerUrl(null); setPlayerTitle(''); }}
                 />
             )}
         </div>

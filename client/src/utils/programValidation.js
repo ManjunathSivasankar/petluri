@@ -10,7 +10,7 @@ export const validateProgram = (formData) => {
     const hasDesc = !!formData.description;
     const hasType = !!formData.type;
     const hasLevel = !!formData.level;
-    const hasDuration = !!formData.duration;
+    const hasDuration = formData.type === 'internship' ? (!!formData.startDate && !!formData.endDate) : !!formData.duration;
     const hasPrice = formData.type === 'free' ? true : (formData.price && Number(formData.price) > 0);
 
     checks.basics.items.push({ label: "Program Title", valid: hasTitle });

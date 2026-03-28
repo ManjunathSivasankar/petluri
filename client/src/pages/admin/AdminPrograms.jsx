@@ -15,6 +15,35 @@ import {
 import { Card, CardContent } from '@/components/ui/Card';
 import api from '@/lib/api';
 import { validateProgram } from '@/utils/programValidation';
+import { getCoursePrefix } from '@/utils/courseHelpers'; // Ensure this helper is available
+
+const AssetStatus = ({ program }) => {
+    const hasCert = !!program.certificateTemplate;
+    const hasOffer = !!program.internshipOfferTemplate;
+    const hasInternCert = !!program.internshipCertificateTemplate;
+
+    if (!hasCert && !hasOffer && !hasInternCert) return null;
+
+    return (
+        <div className="flex items-center gap-1.5 mt-1">
+            {hasCert && (
+                <span className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded bg-purple-50 text-purple-600 border border-purple-100" title="Course Certificate Configured">
+                    <Icon name="Award" size={10} /> CERT
+                </span>
+            )}
+            {hasOffer && (
+                <span className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded bg-blue-50 text-blue-600 border border-blue-100" title="Internship Offer Letter Configured">
+                    <Icon name="FileText" size={10} /> OFFER
+                </span>
+            )}
+            {hasInternCert && (
+                <span className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-600 border border-indigo-100" title="Internship Certificate Configured">
+                    <Icon name="Award" size={10} /> INTERN-CERT
+                </span>
+            )}
+        </div>
+    );
+};
 
 const AdminPrograms = () => {
     const navigate = useNavigate();
@@ -177,10 +206,12 @@ const ProgramTable = ({ programs, loading, emptyMessage, navigate, showPublish, 
     <Table>
         <TableHeader>
             <TableRow>
+                <TableHead className="w-[100px]">ID</TableHead>
                 <TableHead>Title</TableHead>
                 <TableHead>Type</TableHead>
                 <TableHead>Level</TableHead>
                 <TableHead>Price</TableHead>
+                <TableHead>Videos</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
             </TableRow>
@@ -188,28 +219,54 @@ const ProgramTable = ({ programs, loading, emptyMessage, navigate, showPublish, 
         <TableBody>
             {loading ? (
                 <TableRow>
-                    <TableCell colSpan={6} className="text-center py-8 text-slate-500">
+                    <TableCell colSpan={7} className="text-center py-8 text-slate-500">
                         Loading programs...
                     </TableCell>
                 </TableRow>
             ) : programs.length === 0 ? (
                 <TableRow>
-                    <TableCell colSpan={6} className="text-center py-8 text-slate-500">
+                    <TableCell colSpan={7} className="text-center py-8 text-slate-500">
                         {emptyMessage}
                     </TableCell>
                 </TableRow>
             ) : (
                 programs.map((program) => {
-                    // Check validity for drafts
                     const { isReady } = validateProgram(program);
+
+                    // Video coverage stats
+                    const modules = program.modules || [];
+                    const totalModules = modules.length;
+                    const modulesWithVideo = modules.filter(mod =>
+                        (mod.content || []).some(c => c.type === 'video' && c.url)
+                    );
+                    const videosUploaded = modulesWithVideo.length;
+                    const b2Count = modulesWithVideo.filter(mod =>
+                        (mod.content || []).some(c => c.type === 'video' && c.storageProvider === 'backblaze')
+                    ).length;
+                    const allReady = totalModules > 0 && videosUploaded === totalModules;
 
                     return (
                         <TableRow key={program._id}>
-                            <TableCell className="font-medium text-slate-900 px-4 py-3">
-                                {program.title}
-                                {!isReady && !program.isPublished && (
-                                    <span className="block text-xs text-red-500 font-normal mt-0.5">Missing Details</span>
-                                )}
+                            <TableCell className="font-mono font-bold text-[12px] text-slate-600 px-4 py-3">
+                                {program.programId || program.programCode || 'N/A'}
+                            </TableCell>
+                            <TableCell className="px-4 py-3">
+                                <div className="flex flex-col gap-0.5">
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-sm font-bold text-slate-900">{program.title}</span>
+                                    </div>
+                                    <AssetStatus program={program} />
+                                    {!isReady && !program.isPublished && (
+                                        <span className="text-[10px] text-red-500 font-medium flex items-center gap-1 mt-0.5">
+                                            <Icon name="AlertCircle" size={10} /> Missing Details
+                                        </span>
+                                    )}
+                                    {program.isPublished && program.status === 'draft' && (
+                                        <span className="text-[10px] text-amber-600 font-bold flex items-center gap-1 mt-0.5">
+                                            <Icon name="RefreshCw" size={10} className="animate-pulse" /> Update Pending
+                                        </span>
+                                    )}
+                                </div>
                             </TableCell>
                             <TableCell>
                                 <Badge variant="outline" className="capitalize">{program.type}</Badge>
@@ -217,6 +274,28 @@ const ProgramTable = ({ programs, loading, emptyMessage, navigate, showPublish, 
                             <TableCell className="text-slate-600">{program.level}</TableCell>
                             <TableCell className="text-slate-600 font-medium">
                                 {program.price ? `₹${program.price}` : 'Free'}
+                            </TableCell>
+                            {/* Video status */}
+                            <TableCell>
+                                {program.type === 'internship' || totalModules === 0 ? (
+                                    <span className="text-xs text-slate-400">—</span>
+                                ) : (
+                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                        <span className={`inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full ${
+                                            allReady ? 'bg-green-100 text-green-700' :
+                                            videosUploaded > 0 ? 'bg-amber-100 text-amber-700' :
+                                            'bg-red-50 text-red-500'
+                                        }`}>
+                                            <Icon name={allReady ? 'CheckCircle' : 'AlertCircle'} size={10} />
+                                            {videosUploaded}/{totalModules} modules
+                                        </span>
+                                        {b2Count > 0 && (
+                                            <span className="inline-flex items-center gap-0.5 text-xs px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600 border border-blue-100" title={`${b2Count} on Backblaze B2`}>
+                                                <Icon name="Cloud" size={9} /> {b2Count} B2
+                                            </span>
+                                        )}
+                                    </div>
+                                )}
                             </TableCell>
                             <TableCell>
                                 <Badge className={program.isPublished ? 'bg-green-100 text-green-700 border-green-200' : 'bg-yellow-100 text-yellow-700 border-yellow-200'}>
@@ -250,16 +329,28 @@ const ProgramTable = ({ programs, loading, emptyMessage, navigate, showPublish, 
                                     )}
 
                                     {showUnpublish && program.isPublished && (
-                                        <Button
-                                            variant="outline"
-                                            size="sm"
-                                            className="h-8 text-yellow-600 border-yellow-200 hover:bg-yellow-50"
-                                            onClick={() => onUnpublish(program._id)}
-                                            title="Revert to Draft to Edit"
-                                        >
-                                            <Icon name="FileEdit" size={14} className="mr-1" />
-                                            Draft to Edit
-                                        </Button>
+                                        <>
+                                            <Button
+                                                variant="outline"
+                                                size="sm"
+                                                className="h-8 text-blue-600 border-blue-200 hover:bg-blue-50"
+                                                onClick={() => navigate(`/admin/programs/edit/${program._id}`)}
+                                                title="Edit Live Program"
+                                            >
+                                                <Icon name="Edit" size={14} className="mr-1" />
+                                                Edit
+                                            </Button>
+                                            <Button
+                                                variant="outline"
+                                                size="sm"
+                                                className="h-8 text-yellow-600 border-yellow-200 hover:bg-yellow-50"
+                                                onClick={() => onUnpublish(program._id)}
+                                                title="Revert to Draft (Unpublish)"
+                                            >
+                                                <Icon name="WifiOff" size={14} className="mr-1" />
+                                                Unpublish
+                                            </Button>
+                                        </>
                                     )}
 
                                     <Button

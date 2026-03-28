@@ -6,6 +6,12 @@ const userSchema = new mongoose.Schema({
         type: String,
         required: [true, 'Please add a name']
     },
+    studentId: {
+        type: String,
+        unique: true,
+        index: true,
+        sparse: true
+    },
     email: {
         type: String,
         required: [true, 'Please add an email'],
@@ -65,8 +71,18 @@ const userSchema = new mongoose.Schema({
     }
 });
 
-// Encrypt password using bcrypt
+// Encrypt password and generate student ID if new
 userSchema.pre('save', async function () {
+    // Generate Student ID for new students
+    if (this.isNew && this.role === 'student' && !this.studentId) {
+        try {
+            const { generateStudentId } = require('../services/idService');
+            this.studentId = await generateStudentId();
+        } catch (error) {
+            throw error;
+        }
+    }
+
     if (!this.isModified('password')) {
         return;
     }

@@ -33,16 +33,24 @@ const sendEmail = async (options) => {
 
 const sendOtpEmail = async (email, otp) => {
     const html = `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 10px;">
-            <h2 style="color: #333; text-align: center;">Your Login OTP</h2>
-            <p>Hello,</p>
-            <p>You requested a one-time password (OTP) to log in to Petluri Edutech LMS.</p>
-            <div style="background-color: #f4f4f4; padding: 15px; text-align: center; border-radius: 5px; font-size: 24px; font-weight: bold; letter-spacing: 5px; color: #007bff;">
-                ${otp}
+        <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 600px; margin: auto; padding: 40px; border: 1px solid #f0f0f0; border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
+            <div style="text-align: center; margin-bottom: 30px;">
+                <h1 style="color: #007bff; margin: 0; font-size: 28px; font-weight: 800; letter-spacing: -0.5px;">Petluri Edutech</h1>
+                <p style="color: #6c757d; margin: 5px 0 0 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px;">Learning Management System</p>
             </div>
-            <p>This OTP is valid for <strong>10 minutes</strong>. If you did not request this, please ignore this email.</p>
-            <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
-            <p style="font-size: 12px; color: #777 text-align: center;">&copy; 2026 Petluri Edutech LMS. All rights reserved.</p>
+            <div style="background-color: #f8f9fa; padding: 30px; border-radius: 12px; text-align: center; border: 1px dashed #dee2e6;">
+                <p style="color: #495057; margin-bottom: 20px; font-size: 16px;">Hello student,</p>
+                <p style="color: #495057; font-size: 15px;">Use the following 6-digit code to securely log in to your dashboard:</p>
+                <div style="background-color: #ffffff; padding: 20px; text-align: center; border-radius: 8px; font-size: 36px; font-weight: 800; letter-spacing: 8px; color: #007bff; margin: 25px 0; border: 1px solid #e9ecef; font-family: monospace;">
+                    ${otp}
+                </div>
+                <p style="color: #dc3545; font-size: 13px; font-weight: 600;">⚠️ Valid for 10 minutes only</p>
+            </div>
+            <div style="margin-top: 30px; text-align: center;">
+                <p style="color: #6c757d; font-size: 14px;">If you didn't request this code, you can safely ignore this email.</p>
+                <hr style="border: none; border-top: 1px solid #f0f0f0; margin: 25px 0;">
+                <p style="font-size: 12px; color: #adb5bd;">&copy; 2026 Petluri Edutech. Professional Learning Platform.</p>
+            </div>
         </div>
     `;
 

@@ -28,6 +28,8 @@ const {
 
 // ─── Utilities ─────────────────────────────────────────────────────────
 
+const { generateCertificateId: getGlobalCertId } = require("./idService");
+
 const generateDocId = (prefix = "INT") =>
   `${prefix}-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
 
@@ -396,7 +398,7 @@ const issueInternshipCertificate = async (userId, courseId) => {
     }
 
     let existing = await InternshipCertificate.findOne({ userId, courseId });
-    const certId    = existing ? existing.certificateId : generateDocId("INT-CERT");
+    const certId    = existing ? existing.certificateId : getGlobalCertId(course.programId, student.studentId);
     const verifyUrl = `${process.env.CLIENT_URL || "http://localhost:5173"}/verify-internship/${certId}`;
     const completedOn = fmtDate(enrollment.updatedAt || Date.now());
 

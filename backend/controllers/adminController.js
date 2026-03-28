@@ -9,7 +9,7 @@ const InternshipCertificate = require('../models/InternshipCertificate');
 const sendEmail = require('../services/emailService');
 const { issueCertificate } = require('../services/certificateService');
 const { issueInternshipOffer, issueInternshipCertificate } = require('../services/internshipDocumentService');
-const { uploadVideoFile, deleteVideoFile } = require('../services/videoStorageService');
+const { uploadVideoFile, deleteVideoFile, getSignedDownloadUrl, streamVideoFile } = require('../services/videoStorageService');
 const crypto = require('crypto'); // For random password
 const ExcelJS = require('exceljs');
 const fs = require('fs');
@@ -55,30 +55,102 @@ const getQuizTrackingSummary = (enrollment) => {
     };
 };
 
+// Helper: Derive a descriptive prefix from course title (e.g. "Automation Testing" -> "AT")
+const getCoursePrefix = (title) => {
+    if (!title) return 'PROG';
+    const words = title.trim().split(/\s+/).filter(w => w.length > 0);
+    if (words.length === 1) {
+        return words[0].slice(0, 3).toUpperCase();
+    }
+    return words.map(w => w[0]).join('').toUpperCase().slice(0, 4);
+};
+
+// Helper: Enrich module videos with metadata & formatted sizes
+const enrichModuleVideos = (meta, modules = [], existingModules = null) => {
+    const programCode = (meta.programCode || getCoursePrefix(meta.title)).toUpperCase();
+    
+    // Return the programCode to be used for the course itself
+    modules.forEach((mod, mIdx) => {
+        if (!mod.content || !Array.isArray(mod.content)) return;
+
+        mod.content.forEach((item, vIdx) => {
+            if (item.type === 'video') {
+                const programCode = (meta.programCode || getCoursePrefix(meta.title)).toUpperCase();
+                
+                // 1. Generate descriptive Video ID if missing
+                if (!item.videoId && item.url) {
+                    item.videoId = `${programCode}-M${mIdx + 1}-V1`;
+                }
+
+                // 2. Set storage provider & uploadedAt if missing but we have a key/url
+                if (item.url || item.storageKey) {
+                    if (!item.storageProvider && (String(item.url).includes('backblazeb2.com') || item.storageKey)) {
+                        item.storageProvider = 'backblaze';
+                    }
+                    if (!item.uploadedAt) {
+                        item.uploadedAt = new Date();
+                    }
+                }
+
+                // 3. Ensure filename is set
+                if (!item.fileName && item.title) {
+                    item.fileName = item.title;
+                }
+
+                // 4. Preserve/Format size
+                // If the incoming item has 0 or missing size, TRY to find it in the existing DB record
+                // (This helps if the frontend didn't send it but it was already in the DB)
+                if ((!item.fileSizeBytes || item.fileSizeBytes === 0) && existingModules) {
+                    const exMod = existingModules.find(m => String(m._id) === String(mod._id));
+                    if (exMod) {
+                        const exVid = (exMod.content || []).find(c => c.type === 'video' && c.storageKey === item.storageKey);
+                        if (exVid && exVid.fileSizeBytes) {
+                            item.fileSizeBytes = exVid.fileSizeBytes;
+                        }
+                    }
+                }
+
+                if (item.fileSizeBytes && !item.displaySize) {
+                    const mb = (item.fileSizeBytes / (1024 * 1024)).toFixed(2);
+                    item.displaySize = `${mb} MB`;
+                }
+            }
+        });
+    });
+
+    return programCode;
+};
+
 // @desc    Create a new course
 // @route   POST /api/admin/courses
 // @access  Private/Admin
 // Helper: Validate Program for Publishing
-const validateProgram = (data) => {
+const validateProgram = (data, strict = false) => {
     const errors = [];
 
     // 1. Basic Details
     if (!data.title) errors.push("Program title is required");
-    if (!data.description) errors.push("Description is required");
+    if (strict && !data.description) errors.push("Description is required");
     if (!data.type) errors.push("Program type is required");
     if (!data.level) errors.push("Difficulty level is required");
-    if (!data.duration) errors.push("Duration is required");
+    // Duration: required for non-internship; for internship, check dates
+    if (strict) {
+        if (data.type === 'internship') {
+            if (!data.startDate || !data.endDate) errors.push("Start and End dates are required for internships");
+        } else {
+            if (!data.duration) errors.push("Duration is required");
+        }
+    }
 
-    // 2. Price Logic
-    if (data.type !== 'free') {
+    // 2. Price Logic (only enforced at publish)
+    if (strict && data.type !== 'free') {
         if (!data.price || data.price <= 0) errors.push("Price > 0 is required for paid programs");
-    } else {
+    } else if (strict && data.type === 'free') {
         if (data.price > 0) errors.push("Free programs must have price = 0");
     }
 
-    // 3. Module & Content Logic (Common for all except Internship? User said Internship doesn't need videos)
-    // "INTERNSHIP PROGRAM (No videos)"
-    if (data.type !== 'internship') {
+    // 3. Module & Content Logic — only enforced at publish time
+    if (strict && data.type !== 'internship') {
         if (!data.modules || data.modules.length === 0) {
             errors.push("At least one module is required");
         } else {
@@ -88,16 +160,6 @@ const validateProgram = (data) => {
                     errors.push(`Module ${idx + 1} (${mod.title}) is empty`);
                 } else {
                     hasContent = true;
-                    // Check for at least one video if it's a video-based program
-                    // User said: "At least 1 module... Each module must contain: At least 1 video" 
-                    // Wait, "Each module must contain: At least 1 video"? Or just "At least 1 module"?
-                    // User said: "At least 1 module... Each module must contain: At least 1 video". 
-                    // Let's enforce strict rule: Every module must have at least one video (or maybe content?).
-                    // Let's assume "At least one item of content" is the hard rule, and "At least 1 video" implies the program must have content.
-                    // Actually, the requirement says: "Each module must contain: At least 1 video". 
-                    // This is quite strict. Let's verify if `type` is video based.
-                    // "VIDEO-BASED PROGRAMS (Free / Certification / Professional)" -> Yes.
-
                     const hasVideo = mod.content.some(c => c.type === 'video');
                     if (!hasVideo) errors.push(`Module ${idx + 1} must contain at least one video`);
 
@@ -109,17 +171,10 @@ const validateProgram = (data) => {
         }
     }
 
-    // 4. Certification specific
-    if (data.type === 'certification') {
+    // 4. Certification specific — only at publish
+    if (strict && data.type === 'certification') {
         if (!data.certificateTemplate) {
             errors.push("Certification programs must have a certificate background image.");
-        }
-    }
-
-    // 5. Internship Logic
-    if (data.type === 'internship') {
-        if (!data.internshipOfferTemplate && !data.internshipTemplate) {
-            // Allow saving as draft without templates — only block publish
         }
     }
 
@@ -128,6 +183,7 @@ const validateProgram = (data) => {
         errors
     };
 };
+
 
 const validateSingleVideoPerModule = (modules = []) => {
     const errors = [];
@@ -155,16 +211,10 @@ const createCourse = async (req, res) => {
             });
         }
 
-        // Generate Program Code
-        const prefixes = {
-            'free': 'FC',
-            'certification': 'CP',
-            'professional': 'PMC',
-            'internship': 'IP'
-        };
-        const prefix = prefixes[type] || 'PROG';
-        const randomNum = Math.floor(10000 + Math.random() * 90000); // 5 digit random number
-        const programCode = `${prefix}-${randomNum}`; // e.g. FC-12345
+        // Generate Descriptive Program Code
+        const coursePrefix = getCoursePrefix(title);
+        const randomNum = Math.floor(1000 + Math.random() * 9000); // 4 digit random number
+        const programCode = `${coursePrefix}-${randomNum}`; // e.g. AT-1234
 
         let finalStatus = status || 'draft';
         let isPublished = finalStatus === 'published';
@@ -179,6 +229,9 @@ const createCourse = async (req, res) => {
                 });
             }
         }
+
+        // Enrich video metadata before creation
+        enrichModuleVideos({ title, programCode }, modules);
 
         const course = await Course.create({
             programCode,
@@ -228,8 +281,25 @@ const updateCourse = async (req, res) => {
 
         let updateData = { ...req.body };
 
+        const course = await Course.findById(req.params.id);
+        if (!course) {
+            return res.status(404).json({ message: 'Course not found' });
+        }
+
+        // programCode is auto-generated at creation.
+        // If it's missing (legacy), we'll let enrichModuleVideos generate it.
+        // But we don't allow overwriting an existing valid code with an empty string from the UI.
+        if (updateData.programCode === "" || !updateData.programCode) {
+            delete updateData.programCode;
+        }
+
+        // Validate if trying to publish — must validate MERGED data (Existing DB + Incoming Updates)
         if (status === 'published') {
-            const validation = validateProgram(req.body);
+            const mergedData = {
+                ...course.toObject(),
+                ...req.body
+            };
+            const validation = validateProgram(mergedData, true); // strict = true for publish
             if (!validation.isValid) {
                 return res.status(400).json({
                     message: "Cannot publish invalid program",
@@ -240,28 +310,61 @@ const updateCourse = async (req, res) => {
             updateData.status = 'published';
         } else if (status === 'draft' || status === 'archived') {
             updateData.isPublished = false;
-        } else {
-            const currentCourse = await Course.findById(req.params.id);
-            if (currentCourse && (currentCourse.status === 'published' || currentCourse.isPublished)) {
-                updateData.isPublished = true;
-                updateData.status = 'published';
-            }
+        } else if (course.status === 'published' || course.isPublished) {
+            // Maintain published status if not explicitly changing to draft/archive
+            updateData.isPublished = true;
+            updateData.status = 'published';
         }
 
-        const course = await Course.findById(req.params.id);
+        // If modules are being updated via the wizard, PRESERVE existing video content.
+        // Videos are managed exclusively by /api/admin/videos/upload and /delete.
+        // The wizard only manages module metadata (title, description) and quiz content.
+        if (updateData.modules) {
+            updateData.modules = updateData.modules.map((incomingMod) => {
+                // Find the existing DB module to preserve its video entries
+                const existingMod = (course.modules || []).find(
+                    (m) => String(m._id) === String(incomingMod._id)
+                );
 
-        if (!course) {
-            return res.status(404).json({ message: 'Course not found' });
+                // Preserve existing video content items; merge in quiz items from the incoming payload
+                const existingVideos = existingMod
+                    ? (existingMod.content || []).filter((c) => c.type === 'video')
+                    : [];
+                
+                const incomingVideos = (incomingMod.content || []).filter(
+                    (c) => c.type === 'video' && c.url
+                );
+
+                // If existingMod has no video but incomingMod DOES, it's a new upload/module
+                const finalVideos = existingVideos.length > 0 ? existingVideos : incomingVideos;
+
+                const incomingQuizzes = (incomingMod.content || []).filter(
+                    (c) => c.type === 'quiz'
+                );
+
+                return {
+                    ...incomingMod,
+                    _id: existingMod ? existingMod._id : incomingMod._id,
+                    content: [...finalVideos, ...incomingQuizzes]
+                };
+            });
         }
 
-        // Check if template changed
-        const templateChanged = (certificateTemplate && course.certificateTemplate !== certificateTemplate) || 
-                          (internshipTemplate && course.internshipTemplate !== internshipTemplate) ||
-                          (internshipOfferTemplate && course.internshipOfferTemplate !== internshipOfferTemplate) ||
-                          (internshipCertificateTemplate && course.internshipCertificateTemplate !== internshipCertificateTemplate);
+        // Enrich video metadata before update
+        const finalProgramCode = enrichModuleVideos(
+            { title: req.body.title || course.title, programCode: req.body.programCode || course.programCode || '' }, 
+            updateData.modules,
+            course.modules // Pass existing modules for metadata recovery
+        );
+
+        // Ensure programCode is persisted on the course
+        if (!updateData.programCode) {
+            updateData.programCode = finalProgramCode;
+        }
 
         const updatedCourse = await Course.findByIdAndUpdate(req.params.id, updateData, {
             new: true,
+            runValidators: true
         });
 
         // Link Quizzes
@@ -345,7 +448,18 @@ const deleteCourse = async (req, res) => {
 // @access  Private/Admin
 const getAllCourses = async (req, res) => {
     try {
-        const courses = await Course.find({}).sort({ createdAt: -1 });
+        const { search } = req.query;
+        let query = {};
+        
+        if (search) {
+            query.$or = [
+                { title: { $regex: search, $options: 'i' } },
+                { programId: { $regex: search, $options: 'i' } },
+                { programCode: { $regex: search, $options: 'i' } }
+            ];
+        }
+
+        const courses = await Course.find(query).sort({ createdAt: -1 });
         res.json(courses);
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -361,6 +475,20 @@ const getCourseById = async (req, res) => {
         if (!course) {
             return res.status(404).json({ message: 'Course not found' });
         }
+
+        // Enrich video URLs with fresh signed URLs if hosted on B2
+        if (course.modules) {
+            for (let mod of course.modules) {
+                if (mod.content) {
+                    for (let item of mod.content) {
+                        if (item.type === 'video' && item.storageProvider === 'backblaze') {
+                            item.url = `/api/admin/videos/stream/${course._id}/${mod._id}/${item._id}`;
+                        }
+                    }
+                }
+            }
+        }
+
         res.json(course);
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -372,7 +500,18 @@ const getCourseById = async (req, res) => {
 // @access  Private/Admin
 const getAllStudents = async (req, res) => {
     try {
-        const students = await User.find({ role: 'student' }).select('-password').sort({ createdAt: -1 });
+        const { search } = req.query;
+        let query = { role: 'student' };
+
+        if (search) {
+            query.$or = [
+                { name: { $regex: search, $options: 'i' } },
+                { email: { $regex: search, $options: 'i' } },
+                { studentId: { $regex: search, $options: 'i' } }
+            ];
+        }
+
+        const students = await User.find(query).select('-password').sort({ createdAt: -1 });
         res.json({
             success: true,
             count: students.length,
@@ -442,6 +581,35 @@ const createStudent = async (req, res) => {
             program: program || 'N/A',
             programType: type || 'Certification Course'
         });
+
+        // AUTO-ENROLLMENT: If a program (courseId) was provided, create an enrollment record
+        if (program && program !== 'N/A') {
+            try {
+                const course = await Course.findById(program);
+                if (course) {
+                    // Generate Enrollment ID (Format: studentId-NN)
+                    const Counter = require('../models/Counter');
+                    const counterKey = `enrollment_${user.studentId}`;
+                    const counter = await Counter.findOneAndUpdate(
+                        { _id: counterKey },
+                        { $inc: { seq: 1 }, type: 'enrollment' },
+                        { upsert: true, new: true }
+                    );
+                    const enrollmentId = `${user.studentId}-${String(counter.seq).padStart(2, '0')}`;
+
+                    await Enrollment.create({
+                        enrollmentId,
+                        userId: user._id,
+                        courseId: course._id,
+                        status: 'enrolled'
+                    });
+                    console.log(`[Admin] Auto-enrollment ${enrollmentId} created for ${user.email}`);
+                }
+            } catch (enrollErr) {
+                console.error(`[Admin] Auto-enrollment failed for ${user.email}:`, enrollErr.message);
+                // We don't fail the whole request since the user was created
+            }
+        }
 
         // Send Email
         const htmlMessage = `
@@ -663,7 +831,8 @@ const uploadVideo = async (req, res) => {
                 url: uploaded.url,
                 filename: uploaded.fileName,
                 fileSizeBytes: uploaded.fileSizeBytes,
-                storageProvider: uploaded.provider
+                storageProvider: uploaded.provider,
+                storageKey: uploaded.key
             });
         }
 
@@ -696,26 +865,35 @@ const getAdminVideos = async (req, res) => {
         const courses = await Course.find(query).select('title modules');
         const rows = [];
 
-        courses.forEach((course) => {
-            (course.modules || []).forEach((mod) => {
+        for (const course of courses) {
+            (course.modules || []).forEach((mod, mIdx) => {
                 const video = (mod.content || []).find((item) => item.type === 'video' && item.url);
                 if (!video) return;
+
+                // Proxy URL for B2
+                const displayUrl = `/api/admin/videos/stream/${course._id}/${mod._id}/${video._id}`;
+
+                const programCode = course.programCode || getCoursePrefix(course.title);
+                const calculatedVideoId = video.videoId || `${programCode}-M${mIdx + 1}-V1`;
 
                 rows.push({
                     courseId: course._id,
                     courseTitle: course.title,
                     moduleId: mod._id,
                     moduleTitle: mod.title,
-                    videoId: video._id,
+                    moduleIndex: mIdx,
+                    videoId: calculatedVideoId,
+                    mongoVideoId: video._id,
                     videoTitle: video.title,
-                    url: video.url,
+                    url: displayUrl,
                     fileName: video.fileName || video.title,
-                    fileSizeBytes: video.fileSizeBytes || inferLocalVideoSize(video.url),
+                    fileSizeBytes: video.fileSizeBytes || 0,
                     uploadedAt: video.uploadedAt || null,
-                    storageProvider: video.storageProvider || 'local'
+                    storageProvider: 'backblaze',
+                    storageKey: video.storageKey || ''
                 });
             });
-        });
+        }
 
         res.json(rows);
     } catch (error) {
@@ -741,61 +919,89 @@ const uploadModuleVideo = async (req, res) => {
         const course = await Course.findById(courseId);
         if (!course) return res.status(404).json({ message: 'Course not found' });
 
-        const moduleDoc = (course.modules || []).find((mod) => String(mod._id) === String(moduleId));
-        if (!moduleDoc) return res.status(404).json({ message: 'Module not found in this course' });
+        const moduleIndex = (course.modules || []).findIndex((mod) => String(mod._id) === String(moduleId));
+        if (moduleIndex === -1) return res.status(404).json({ message: 'Module not found in this course' });
+        const moduleDoc = course.modules[moduleIndex];
 
+        // Generate Structured Video ID: PROGRAMCODE-M{index}-V1
+        const programCode = course.programCode || getCoursePrefix(course.title);
+        const generatedVideoId = `${programCode}-M${moduleIndex + 1}-V1`;
+
+        // Upload file first
         const uploaded = await uploadVideoFile(req.file);
 
+        const videoTitle = req.body.title || req.file.originalname.replace(/\.[^/.]+$/, '');
         const existingVideoIndex = (moduleDoc.content || []).findIndex((item) => item.type === 'video');
+
         if (existingVideoIndex >= 0) {
+            // Delete old video from storage
             const existingVideo = moduleDoc.content[existingVideoIndex];
             await deleteVideoFile({
-                provider: existingVideo.storageProvider,
-                key: existingVideo.storageKey,
-                url: existingVideo.url
+                key: existingVideo.storageKey
             });
 
-            moduleDoc.content[existingVideoIndex] = {
-                ...moduleDoc.content[existingVideoIndex].toObject(),
-                type: 'video',
-                title: req.body.title || req.file.originalname.replace(/\.[^/.]+$/, ''),
-                url: uploaded.url,
-                duration: duration || moduleDoc.content[existingVideoIndex].duration || '00:00',
-                fileName: uploaded.fileName,
-                fileSizeBytes: uploaded.fileSizeBytes,
-                storageProvider: uploaded.provider,
-                storageKey: uploaded.key,
-                uploadedAt: new Date()
-            };
+            // Use atomic positional $set so Mongoose change-detection issues cannot prevent the write
+            const setPath = `modules.$[mod].content.$[vid]`;
+            await Course.updateOne(
+                { _id: courseId },
+                {
+                    $set: {
+                        [`${setPath}.title`]:           videoTitle,
+                        [`${setPath}.url`]:             uploaded.url,
+                        [`${setPath}.duration`]:        duration || existingVideo.duration || '00:00',
+                        [`${setPath}.fileName`]:        uploaded.fileName,
+                        [`${setPath}.fileSizeBytes`]:   uploaded.fileSizeBytes,
+                        [`${setPath}.storageProvider`]: uploaded.provider,
+                        [`${setPath}.storageKey`]:      uploaded.key || '',
+                        [`${setPath}.uploadedAt`]:      new Date(),
+                        [`${setPath}.videoId`]:         generatedVideoId
+                    }
+                },
+                {
+                    arrayFilters: [
+                        { 'mod._id': moduleDoc._id },
+                        { 'vid.type': 'video' }
+                    ]
+                }
+            );
         } else {
-            moduleDoc.content.push({
-                type: 'video',
-                title: req.body.title || req.file.originalname.replace(/\.[^/.]+$/, ''),
-                url: uploaded.url,
-                duration: duration || '00:00',
-                fileName: uploaded.fileName,
-                fileSizeBytes: uploaded.fileSizeBytes,
-                storageProvider: uploaded.provider,
-                storageKey: uploaded.key,
-                uploadedAt: new Date()
-            });
+            // Push a brand-new content item to the module
+            await Course.updateOne(
+                { _id: courseId, 'modules._id': moduleDoc._id },
+                {
+                    $push: {
+                        'modules.$.content': {
+                            type: 'video',
+                            title: videoTitle,
+                            url: uploaded.url,
+                            duration: duration || '00:00',
+                            fileName: uploaded.fileName,
+                            fileSizeBytes: uploaded.fileSizeBytes,
+                            storageProvider: uploaded.provider,
+                            storageKey: uploaded.key || '',
+                            uploadedAt: new Date(),
+                            videoId: generatedVideoId
+                        }
+                    }
+                }
+            );
         }
-
-        await course.save();
 
         res.json({
             message: 'Video uploaded successfully',
             courseId,
             moduleId,
-            url: uploaded.url,
+            url: `/api/admin/videos/stream/${courseId}/${moduleId}/${uploaded.id}`,
             fileName: uploaded.fileName,
             fileSizeBytes: uploaded.fileSizeBytes,
-            storageProvider: uploaded.provider
+            storageProvider: 'backblaze'
         });
     } catch (error) {
+        console.error('[uploadModuleVideo]', error.message);
         res.status(500).json({ message: error.message });
     }
 };
+
 
 // @desc    Delete module video
 // @route   DELETE /api/admin/videos/:courseId/:moduleId
@@ -816,9 +1022,7 @@ const deleteModuleVideo = async (req, res) => {
 
         const existingVideo = moduleDoc.content[existingVideoIndex];
         await deleteVideoFile({
-            provider: existingVideo.storageProvider,
-            key: existingVideo.storageKey,
-            url: existingVideo.url
+            key: existingVideo.storageKey
         });
 
         moduleDoc.content = moduleDoc.content.filter((_, idx) => idx !== existingVideoIndex);
@@ -830,6 +1034,132 @@ const deleteModuleVideo = async (req, res) => {
     }
 };
 
+// Memory Cache for B2 Bucket List (Reduces Class B Transactions)
+let B2_LIST_CACHE = {
+    data: null,
+    lastFetched: 0,
+    TTL: 5 * 60 * 1000 // 5 minutes
+};
+
+// @desc    List all objects in the Backblaze B2 bucket, grouped by folder
+// @route   GET /api/admin/videos/b2-bucket
+// @access  Private/Admin
+const getB2BucketContents = async (req, res) => {
+    try {
+        const now = Date.now();
+        if (B2_LIST_CACHE.data && (now - B2_LIST_CACHE.lastFetched < B2_LIST_CACHE.TTL)) {
+            console.log('[B2 Cache] Serving bucket contents from cache (TTL: 5m)');
+            return res.json(B2_LIST_CACHE.data);
+        }
+
+        const bucket = process.env.B2_BUCKET_NAME || '';
+        const keyId = process.env.B2_KEY_ID || '';
+        const appKey = process.env.B2_APPLICATION_KEY || process.env.B2_APP_KEY || '';
+        const rawEndpoint = process.env.B2_S3_ENDPOINT || process.env.B2_ENDPOINT || '';
+        const region = process.env.B2_REGION || 'us-east-005';
+
+        const normalizeEndpoint = (v = '') => {
+            const t = String(v).trim();
+            if (!t) return '';
+            return /^https?:\/\//i.test(t) ? t.replace(/\/$/, '') : `https://${t}`.replace(/\/$/, '');
+        };
+        const endpoint = normalizeEndpoint(rawEndpoint);
+
+        if (!keyId || !appKey || !bucket || !endpoint) {
+            return res.json({ enabled: false, folders: [] });
+        }
+
+        const { S3Client, ListObjectsV2Command } = require('@aws-sdk/client-s3');
+        const client = new S3Client({
+            region,
+            endpoint,
+            forcePathStyle: true,
+            credentials: { accessKeyId: keyId, secretAccessKey: appKey }
+        });
+
+        // Paginate through all objects
+        let allObjects = [];
+        let continuationToken = undefined;
+        do {
+            const cmd = new ListObjectsV2Command({
+                Bucket: bucket,
+                ContinuationToken: continuationToken
+            });
+            const result = await client.send(cmd);
+            allObjects = allObjects.concat(result.Contents || []);
+            continuationToken = result.IsTruncated ? result.NextContinuationToken : undefined;
+        } while (continuationToken);
+
+        // Group by folder prefix and generate signed URLs
+        const folderMap = {};
+        for (const obj of allObjects) {
+            const key = obj.Key || '';
+            const slashIdx = key.lastIndexOf('/');
+            const folder = slashIdx >= 0 ? key.substring(0, slashIdx) : '(root)';
+            const fileName = slashIdx >= 0 ? key.substring(slashIdx + 1) : key;
+            if (!fileName) continue; // skip folder placeholder objects
+            
+            if (!folderMap[folder]) folderMap[folder] = [];
+
+            // Generate proxy URL for each file
+            const proxyUrl = `/api/admin/videos/stream-raw?key=${encodeURIComponent(key)}`;
+
+            folderMap[folder].push({
+                key,
+                fileName,
+                size: obj.Size || 0,
+                lastModified: obj.LastModified || null,
+                url: proxyUrl
+            });
+        }
+
+        const folders = Object.entries(folderMap).map(([name, files]) => ({ name, files }));
+        const result = { enabled: true, bucket, folders };
+
+        B2_LIST_CACHE = {
+            data: result,
+            lastFetched: now,
+            TTL: 5 * 60 * 1000
+        };
+
+        res.json(result);
+    } catch (error) {
+        console.error('B2 bucket list error:', error.message);
+        res.status(500).json({ message: 'Failed to list B2 bucket contents', error: error.message });
+    }
+};
+
+// @desc    Delete a single file from Backblaze B2 bucket by key
+// @route   DELETE /api/admin/videos/b2-file
+// @access  Private/Admin
+const deleteB2File = async (req, res) => {
+    try {
+        const { key } = req.body;
+        if (!key) return res.status(400).json({ message: 'B2 file key is required' });
+
+        await deleteVideoFile({ key });
+
+        // If the key matches a module video's storageKey, clear it from the course document too
+        const courses = await Course.find({ 'modules.content.storageKey': key });
+        for (const course of courses) {
+            let modified = false;
+            course.modules.forEach(mod => {
+                const idx = (mod.content || []).findIndex(c => c.storageKey === key);
+                if (idx >= 0) {
+                    mod.content.splice(idx, 1);
+                    modified = true;
+                }
+            });
+            if (modified) await course.save();
+        }
+
+        res.json({ message: `Deleted ${key} from B2 successfully` });
+    } catch (error) {
+        console.error('B2 delete error:', error.message);
+        res.status(500).json({ message: 'Failed to delete file from B2', error: error.message });
+    }
+};
+
 
 // @desc    Get all enrollments
 // @route   GET /api/admin/enrollments
@@ -837,21 +1167,26 @@ const deleteModuleVideo = async (req, res) => {
 const getAllEnrollments = async (req, res) => {
     try {
         const enrollments = await Enrollment.find({})
-            .populate('userId', 'name email phone collegeName collegeDetails personalAddress')
+            .populate('userId', 'name email phone collegeName collegeDetails personalAddress studentId')
             .populate('courseId', 'title type price programCode')
-            .sort({ createdAt: -1 })
+            .sort({ enrolledAt: -1 })
             .lean();
 
-        // Fetch corresponding payments for each enrollment
+        // Fetch corresponding payments and certificates for each enrollment
         const enrichedEnrollments = await Promise.all(enrollments.map(async (enrollment) => {
-            const payment = await Payment.findOne({
-                userId: enrollment.userId?._id,
-                courseId: enrollment.courseId?._id
-            }).sort({ createdAt: -1 }).lean();
+            const [payment, cert, internCert, internOffer] = await Promise.all([
+                Payment.findOne({ userId: enrollment.userId?._id, courseId: enrollment.courseId?._id }).sort({ createdAt: -1 }).lean(),
+                require('../models/Certificate').findOne({ userId: enrollment.userId?._id, courseId: enrollment.courseId?._id }).lean(),
+                require('../models/InternshipCertificate').findOne({ userId: enrollment.userId?._id, courseId: enrollment.courseId?._id }).lean(),
+                require('../models/InternshipOffer').findOne({ userId: enrollment.userId?._id, courseId: enrollment.courseId?._id }).lean()
+            ]);
 
             return {
                 ...enrollment,
                 paymentDetails: payment || null,
+                certificate: cert || null,
+                internshipCertificate: internCert || null,
+                internshipOffer: internOffer || null,
                 completionStatus: enrollment.status === 'completed' ? 'completed' : 'not completed',
                 feedback: enrollment.feedback || { submitted: false, rating: null, comments: '' },
                 quizTracking: getQuizTrackingSummary(enrollment)
@@ -1102,6 +1437,39 @@ const getDashboardStats = async (req, res) => {
 
         const totalHours = Math.round(totalSeconds / 3600);
 
+        // 7. Recent Video Activity (Log)
+        // Find courses with videos, sort by updatedAt, and pick the last 5
+        const recentActivityCourses = await Course.find({ 
+            "modules.content": { $elemMatch: { type: 'video', storageKey: { $ne: '' } } } 
+        })
+        .sort({ updatedAt: -1 })
+        .limit(10) // Fetch more then filter
+        .select('title programCode modules updatedAt');
+
+        const recentVideos = [];
+        recentActivityCourses.forEach(course => {
+            (course.modules || []).forEach(mod => {
+                (mod.content || []).forEach(item => {
+                    if (item.type === 'video' && item.uploadedAt) {
+                        recentVideos.push({
+                            courseId: course._id,
+                            courseTitle: course.title,
+                            programCode: course.programCode || getCoursePrefix(course.title),
+                            videoId: item.videoId || 'GEN-VID',
+                            title: item.title,
+                            uploadedAt: item.uploadedAt,
+                            size: item.displaySize || '—'
+                        });
+                    }
+                });
+            });
+        });
+
+        // Sort the flat list by date and limit to 5
+        const sortedRecentVideos = recentVideos
+            .sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt))
+            .slice(0, 5);
+
         res.json({
             totalStudents,
             totalEnrollments,
@@ -1110,7 +1478,8 @@ const getDashboardStats = async (req, res) => {
             totalDraftCourses,
             totalCertificates,
             totalHours,
-            topCourses
+            topCourses,
+            recentVideos: sortedRecentVideos
         });
 
     } catch (error) {
@@ -1329,6 +1698,76 @@ const downloadInternshipCertificate = async (req, res) => {
 };
 
 
+// @desc    Proxy video stream from Backblaze B2 to bypass CORS/Auth issues
+// @route   GET /api/admin/videos/stream/:courseId/:moduleId/:videoId
+// @access  Private/Admin
+const proxyVideo = async (req, res) => {
+    try {
+        const { courseId, moduleId, videoId } = req.params;
+        const course = await Course.findById(courseId);
+        if (!course) return res.status(404).send('Course not found');
+
+        const mod = (course.modules || []).find(m => String(m._id) === moduleId);
+        if (!mod) return res.status(404).send('Module not found');
+
+        const video = (mod.content || []).find(c => c.type === 'video' && String(c._id) === videoId);
+        if (!video) {
+            console.error(`[proxyVideo] Video Object ID NOT FOUND: ${videoId} in Module: ${moduleId}`);
+            return res.status(404).send('Video entry not found in database');
+        }
+        if (!video.storageKey) {
+            console.error(`[proxyVideo] Video MISSING storageKey for Object ID: ${videoId}`);
+            return res.status(404).send('Video entry lacks a storage key (might be a legacy local file)');
+        }
+
+        if (video.storageProvider !== 'backblaze') {
+            return res.status(400).send('Only Backblaze videos can be proxied');
+        }
+
+        const range = req.headers.range;
+        const s3Response = await streamVideoFile({ key: video.storageKey, range });
+
+        // Forward headers from B2
+        if (s3Response.ContentType) res.setHeader('Content-Type', s3Response.ContentType);
+        if (s3Response.ContentLength) res.setHeader('Content-Length', s3Response.ContentLength);
+        if (s3Response.ContentRange) res.setHeader('Content-Range', s3Response.ContentRange);
+        if (s3Response.AcceptRanges) res.setHeader('Accept-Ranges', s3Response.AcceptRanges);
+        if (s3Response.ETag) res.setHeader('ETag', s3Response.ETag);
+
+        res.status(s3Response.$metadata.httpStatusCode || 200);
+
+        // Pipe the B2 stream to the express response
+        s3Response.Body.pipe(res);
+    } catch (error) {
+        console.error('[proxyVideo] Stream error:', error.message);
+        if (!res.headersSent) res.status(500).send(error.message);
+    }
+};
+
+// @desc    Proxy raw B2 file from Backblaze B2 (for browser/previews)
+// @route   GET /api/admin/videos/stream-raw
+// @access  Private/Admin
+const proxyB2File = async (req, res) => {
+    try {
+        const { key } = req.query;
+        if (!key) return res.status(400).send('Key is required');
+
+        const range = req.headers.range;
+        const s3Response = await streamVideoFile({ key, range });
+
+        if (s3Response.ContentType) res.setHeader('Content-Type', s3Response.ContentType);
+        if (s3Response.ContentLength) res.setHeader('Content-Length', s3Response.ContentLength);
+        if (s3Response.ContentRange) res.setHeader('Content-Range', s3Response.ContentRange);
+        if (s3Response.AcceptRanges) res.setHeader('Accept-Ranges', s3Response.AcceptRanges);
+
+        res.status(s3Response.$metadata.httpStatusCode || 200);
+        s3Response.Body.pipe(res);
+    } catch (error) {
+        console.error('[proxyB2File] Stream error:', error.message);
+        if (!res.headersSent) res.status(500).send(error.message);
+    }
+};
+
 module.exports = {
     createCourse,
     updateCourse,
@@ -1359,5 +1798,9 @@ module.exports = {
     downloadInternshipCertificate,
     getAdminVideos,
     uploadModuleVideo,
-    deleteModuleVideo
+    deleteModuleVideo,
+    getB2BucketContents,
+    deleteB2File,
+    proxyVideo,
+    proxyB2File
 };
