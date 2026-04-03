@@ -1609,7 +1609,7 @@ const getAllCertificates = async (req, res) => {
     try {
         const certificates = await Certificate.find({})
             .populate('userId', 'name email')
-            .populate('courseId', 'title')
+            .populate('courseId', 'title programCode type')
             .sort({ generatedDate: -1 });
         res.json(certificates);
     } catch (error) {

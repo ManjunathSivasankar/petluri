@@ -10,19 +10,33 @@ import {
     TableHead, 
     TableCell 
 } from '@/components/ui/Table';
+import { Input } from '@/components/ui/Input';
+import { Select } from '@/components/ui/Select';
 import api from '@/lib/api';
 
 const CertificatesPage = () => {
     const [certificates, setCertificates] = useState([]);
+    const [programs, setPrograms] = useState([]);
+    const [searchTerm, setSearchTerm] = useState('');
+    const [selectedProgram, setSelectedProgram] = useState('');
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
         const fetchCertificates = async () => {
             try {
-                const response = await api.get('/admin/certificates');
-                setCertificates(response.data);
+                const [certRes, progRes] = await Promise.all([
+                    api.get('/admin/certificates'),
+                    api.get('/admin/courses')
+                ]);
+                setCertificates(certRes.data);
+                // Extract unique non-internship program details for filtering
+                const uniqueProgs = progRes.data
+                    .filter(p => p.type !== 'internship')
+                    .map(p => ({ title: p.title, code: p.programCode || p.programId }))
+                    .sort((a, b) => a.title.localeCompare(b.title));
+                setPrograms(uniqueProgs);
             } catch (error) {
-                console.error("Failed to fetch certificates:", error);
+                console.error("Failed to fetch data:", error);
             } finally {
                 setLoading(false);
             }
@@ -30,6 +44,21 @@ const CertificatesPage = () => {
 
         fetchCertificates();
     }, []);
+
+    const filteredCertificates = certificates.filter(cert => {
+        // Exclude internship programs from the certificate log list
+        if (cert.courseId?.type === 'internship') return false;
+
+        const query = searchTerm.toLowerCase();
+        const matchesQuery = (
+            (cert.studentName || '').toLowerCase().includes(query) ||
+            (cert.certificateId || '').toLowerCase().includes(query) ||
+            (cert.courseTitle || '').toLowerCase().includes(query) ||
+            (cert.userId?.email || '').toLowerCase().includes(query)
+        );
+        const matchesProgram = selectedProgram === '' || cert.courseTitle === selectedProgram;
+        return matchesQuery && matchesProgram;
+    });
 
     const handleDownload = async (cert) => {
         try {
@@ -60,6 +89,30 @@ const CertificatesPage = () => {
 
             <Card>
                 <CardContent className="p-0">
+                    <div className="p-4 border-b border-slate-200 bg-slate-50/50 flex flex-col md:flex-row gap-4">
+                        <div className="relative flex-1 max-w-md">
+                            <Icon name="Search" size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                            <Input 
+                                placeholder="Search by Student Name, ID, or Course..." 
+                                className="pl-10"
+                                value={searchTerm}
+                                onChange={(e) => setSearchTerm(e.target.value)}
+                            />
+                        </div>
+                        <div className="w-full md:w-64">
+                            <Select 
+                                value={selectedProgram}
+                                onChange={(e) => setSelectedProgram(e.target.value)}
+                            >
+                                <option value="">All Programs</option>
+                                {programs.map(prog => (
+                                    <option key={prog.code} value={prog.title}>
+                                        {prog.code} - {prog.title}
+                                    </option>
+                                ))}
+                            </Select>
+                        </div>
+                    </div>
                     <Table>
                         <TableHeader>
                             <TableRow>
@@ -80,11 +133,11 @@ const CertificatesPage = () => {
                             ) : certificates.length === 0 ? (
                                 <TableRow>
                                     <TableCell colSpan={5} className="text-center py-8 text-slate-500">
-                                        No certificates issued yet.
+                                        No certificates found matching your search.
                                     </TableCell>
                                 </TableRow>
                             ) : (
-                                certificates.map((cert) => (
+                                filteredCertificates.map((cert) => (
                                     <TableRow key={cert._id}>
                                         <TableCell className="font-mono text-xs font-bold text-slate-600">
                                             {cert.certificateId}

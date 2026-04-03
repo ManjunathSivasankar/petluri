@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/Button';
 import { Icon } from '@/components/ui/Icon';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/Tabs';
 import { ProgressBar } from '@/components/ui/ProgressBar';
+import { UpsellModal } from '@/components/student/UpsellModal';
 import api from '@/lib/api';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || api.defaults.baseURL || 'http://localhost:5001/api';
@@ -55,6 +56,7 @@ const LearningPage = () => {
     const [volume, setVolume] = useState(1);
     const [isMuted, setIsMuted] = useState(false);
     const [showControls, setShowControls] = useState(true);
+    const [isUpsellModalOpen, setIsUpsellModalOpen] = useState(false);
 
     const videoRef = useRef(null);
     const playerContainerRef = useRef(null);
@@ -197,6 +199,25 @@ const LearningPage = () => {
     };
 
     const handleVideoSelect = (video) => {
+        // Upsell Check
+        if (courseData?.upsell?.isEnabled && (courseData.type === 'free' || courseData.type === 'certification')) {
+            const videoIndex = playlist.findIndex(v => v._id === video._id);
+            const triggerLimit = courseData.upsell.triggerCondition || 2;
+            
+            // For modules trigger type, triggerLimit is in terms of modules
+            let shouldBlock = false;
+            if (courseData.upsell.triggerType === 'module') {
+                 shouldBlock = video.moduleIndex > triggerLimit;
+            } else {
+                 shouldBlock = videoIndex >= triggerLimit;
+            }
+
+            if (shouldBlock) {
+                 setIsUpsellModalOpen(true);
+                 return; // Prevent playback
+            }
+        }
+
         setActiveVideo(video);
         setWatchedSeconds(0);
         setVideoDuration(0);
@@ -702,6 +723,15 @@ const LearningPage = () => {
                     </Button>
                 </div>
             </div>
+            
+            {/* Upsell Modal */}
+            <UpsellModal 
+                isOpen={isUpsellModalOpen} 
+                onClose={() => setIsUpsellModalOpen(false)} 
+                course={courseData}
+                certificateCourse={courseData?.upsell?.certificateCourseId}
+                professionalCourse={courseData?.upsell?.professionalCourseId}
+            />
         </div>
     );
 };

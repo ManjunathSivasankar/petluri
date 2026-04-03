@@ -14,7 +14,6 @@ const adminMenuItems = [
     { name: 'Certificates', path: '/admin/certificates', icon: 'Award' },
     { name: 'Internships', path: '/admin/internships', icon: 'FileText' },
     { name: 'Reports', path: '/admin/reports', icon: 'BarChart3' },
-    { name: 'Settings', path: '/admin/settings', icon: 'Settings' },
 ];
 
 const AdminLayout = () => {

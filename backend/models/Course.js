@@ -107,6 +107,13 @@ const courseSchema = new mongoose.Schema({
         type: Boolean,
         default: false
     },
+    upsell: {
+        isEnabled: { type: Boolean, default: false },
+        triggerType: { type: String, enum: ['video', 'module'], default: 'video' },
+        triggerCondition: { type: Number, default: 2 },
+        certificateCourseId: { type: mongoose.Schema.Types.ObjectId, ref: 'Course', default: null },
+        professionalCourseId: { type: mongoose.Schema.Types.ObjectId, ref: 'Course', default: null }
+    },
     createdBy: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User',

@@ -86,7 +86,6 @@ function App() {
         <Route path="certificates" element={<CertificatesPage />} />
         <Route path="internships" element={<InternshipsPage />} />
         <Route path="reports" element={<ReportsPage />} />
-        <Route path="settings" element={<div className="p-4">Settings (Placeholder)</div>} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

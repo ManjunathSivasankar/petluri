@@ -345,7 +345,9 @@ const getCourseDetails = async (req, res) => {
             .populate({
                 path: 'modules.content.quizId',
                 select: 'title timeLimit passingScore questions'
-            });
+            })
+            .populate('upsell.certificateCourseId', 'title description image price type level duration')
+            .populate('upsell.professionalCourseId', 'title description image price type level duration');
 
         // Enrich ALL video URLs with fresh stream URLs if hosted on B2
         if (course.modules) {

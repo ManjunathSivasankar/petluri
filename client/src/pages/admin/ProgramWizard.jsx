@@ -19,6 +19,7 @@ const ProgramWizard = () => {
     const [loading, setLoading] = useState(false);
     const [quizzes, setQuizzes] = useState([]);
     const [highlightModule, setHighlightModule] = useState(null);
+    const [publishedCourses, setPublishedCourses] = useState([]);
 
     const [formData, setFormData] = useState({
         title: '',
@@ -36,7 +37,8 @@ const ProgramWizard = () => {
         startDate: '', // Internship start date
         endDate: '',   // Internship end date
         modules: [{ title: 'Introduction', description: '', content: [] }], // Default module
-        status: 'draft' // Default status
+        status: 'draft', // Default status
+        upsell: { isEnabled: false, triggerType: 'video', triggerCondition: 2, certificateCourseId: '', professionalCourseId: '' }
     });
 
     // Validation Status
@@ -69,7 +71,8 @@ const ProgramWizard = () => {
                     startDate: course.startDate ? course.startDate.split('T')[0] : '',
                     endDate: course.endDate ? course.endDate.split('T')[0] : '',
                     modules: course.modules || [],
-                    status: course.status || (course.isPublished ? 'published' : 'draft') // fallback for legacy
+                    status: course.status || (course.isPublished ? 'published' : 'draft'), // fallback for legacy
+                    upsell: course.upsell || { isEnabled: false, triggerType: 'video', triggerCondition: 2, certificateCourseId: '', professionalCourseId: '' }
                 });
             } catch (error) {
                 console.error("Failed to fetch course details", error);
@@ -94,6 +97,21 @@ const ProgramWizard = () => {
         };
         fetchQuizzes();
     }, []);
+
+    // Fetch Published Courses for Upsell Configuration
+    useEffect(() => {
+        const fetchPublishedCourses = async () => {
+            try {
+                const res = await api.get('/admin/courses');
+                const allCourses = Array.isArray(res.data) ? res.data : [];
+                // Only show published courses, and exclude the current course itself
+                setPublishedCourses(allCourses.filter(c => c.isPublished && c._id !== id));
+            } catch (error) {
+                console.error("Failed to fetch published courses", error);
+            }
+        };
+        fetchPublishedCourses();
+    }, [id]);
     
     // URL Parameter Deep Linking
     useEffect(() => {
@@ -143,6 +161,16 @@ const ProgramWizard = () => {
             }
             return { ...prev, ...updates };
         });
+    };
+
+    const handleUpsellChange = (name, value) => {
+        setFormData(prev => ({
+            ...prev,
+            upsell: {
+                ...prev.upsell,
+                [name]: value
+            }
+        }));
     };
 
     const handleImageUpload = async (e) => {
@@ -203,6 +231,12 @@ const ProgramWizard = () => {
                 return cleanItem;
             })
         }));
+
+        // 3. Handle Upsell ObjectIds
+        if (sanitizedData.upsell) {
+            if (!sanitizedData.upsell.certificateCourseId) delete sanitizedData.upsell.certificateCourseId;
+            if (!sanitizedData.upsell.professionalCourseId) delete sanitizedData.upsell.professionalCourseId;
+        }
 
         try {
             if (id) {
@@ -315,6 +349,79 @@ const ProgramWizard = () => {
                         disabled={formData.type === 'free'}
                     />
                 </div>
+            </div>
+            
+            {/* Upsell Configuration */}
+            <div className="p-4 border border-blue-200 bg-blue-50 rounded-lg space-y-4">
+                <div className="flex items-center justify-between">
+                    <div>
+                        <h3 className="text-md font-bold text-slate-800">Upsell Configuration (Optional)</h3>
+                        <p className="text-xs text-slate-600">Suggest advanced courses after a student reaches a certain point in this program.</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <input
+                            type="checkbox"
+                            id="upsellEnabled"
+                            checked={formData.upsell?.isEnabled || false}
+                            onChange={(e) => handleUpsellChange('isEnabled', e.target.checked)}
+                            className="w-4 h-4 text-brand-blue rounded border-gray-300 focus:ring-brand-blue"
+                        />
+                        <Label htmlFor="upsellEnabled">Enable Upsell</Label>
+                    </div>
+                </div>
+
+                {formData.upsell?.isEnabled && (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-blue-100">
+                        <div className="space-y-2">
+                            <Label>Trigger Type</Label>
+                            <select
+                                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none"
+                                value={formData.upsell.triggerType}
+                                onChange={(e) => handleUpsellChange('triggerType', e.target.value)}
+                            >
+                                <option value="video">After X Videos Completed</option>
+                                <option value="module">After X Modules Completed</option>
+                            </select>
+                        </div>
+                        <div className="space-y-2">
+                            <Label>Trigger Condition (X)</Label>
+                            <Input
+                                type="number"
+                                min="1"
+                                value={formData.upsell.triggerCondition}
+                                onChange={(e) => handleUpsellChange('triggerCondition', Number(e.target.value))}
+                            />
+                        </div>
+
+                        <div className="space-y-2">
+                            <Label>Certificate Course Upsell</Label>
+                            <select
+                                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none"
+                                value={formData.upsell.certificateCourseId}
+                                onChange={(e) => handleUpsellChange('certificateCourseId', e.target.value)}
+                            >
+                                <option value="">-- Select Course (Optional) --</option>
+                                {publishedCourses.filter(c => c.type === 'certification').map(c => (
+                                    <option key={c._id} value={c._id}>{c.title} ({c.programCode})</option>
+                                ))}
+                            </select>
+                        </div>
+
+                        <div className="space-y-2">
+                            <Label>Professional Course Upsell</Label>
+                            <select
+                                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none"
+                                value={formData.upsell.professionalCourseId}
+                                onChange={(e) => handleUpsellChange('professionalCourseId', e.target.value)}
+                            >
+                                <option value="">-- Select Course (Optional) --</option>
+                                {publishedCourses.filter(c => c.type === 'professional').map(c => (
+                                    <option key={c._id} value={c._id}>{c.title} ({c.programCode})</option>
+                                ))}
+                            </select>
+                        </div>
+                    </div>
+                )}
             </div>
         </div>
     );
