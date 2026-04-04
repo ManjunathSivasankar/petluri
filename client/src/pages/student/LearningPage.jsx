@@ -7,6 +7,7 @@ import { Icon } from '@/components/ui/Icon';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/Tabs';
 import { ProgressBar } from '@/components/ui/ProgressBar';
 import { UpsellModal } from '@/components/student/UpsellModal';
+import { VideoPlayer } from '@/components/ui/VideoPlayer';
 import api from '@/lib/api';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || api.defaults.baseURL || 'http://localhost:5001/api';
@@ -49,19 +50,50 @@ const LearningPage = () => {
     const [submittingFeedback, setSubmittingFeedback] = useState(false);
     const [playbackRate, setPlaybackRate] = useState(1);
     const [watchedSeconds, setWatchedSeconds] = useState(0);
-    const [videoDuration, setVideoDuration] = useState(0);
-    const [videoLoading, setVideoLoading] = useState(false);
-    const [isPlaying, setIsPlaying] = useState(false);
-    const [isFullscreen, setIsFullscreen] = useState(false);
-    const [volume, setVolume] = useState(1);
-    const [isMuted, setIsMuted] = useState(false);
-    const [showControls, setShowControls] = useState(true);
     const [isUpsellModalOpen, setIsUpsellModalOpen] = useState(false);
+    const [securityWarning, setSecurityWarning] = useState('');
 
-    const videoRef = useRef(null);
     const playerContainerRef = useRef(null);
     const maxPlayedRef = useRef(0);
     const lastSyncAtRef = useRef(0);
+
+    // Security measures
+    useEffect(() => {
+        const handleContextMenu = (e) => e.preventDefault();
+        const handleKeyDown = (e) => {
+            if (e.ctrlKey && (e.key === 's' || e.key === 'p' || e.key === 'u')) {
+                e.preventDefault();
+                setSecurityWarning('Action restricted for content protection.');
+            }
+            if (e.key === 'PrintScreen') {
+                e.preventDefault();
+                setSecurityWarning('Screenshots are discouraged.');
+            }
+        };
+
+        const handleBlur = () => {
+            // VideoPlayer handles its own pause logic if needed, 
+            // but we can still broadcast a global pause if we had a ref.
+            // For now, let's keep it simple.
+        };
+
+        window.addEventListener('contextmenu', handleContextMenu);
+        window.addEventListener('keydown', handleKeyDown);
+        window.addEventListener('blur', handleBlur);
+
+        return () => {
+            window.removeEventListener('contextmenu', handleContextMenu);
+            window.removeEventListener('keydown', handleKeyDown);
+            window.removeEventListener('blur', handleBlur);
+        };
+    }, []);
+
+    useEffect(() => {
+        if (securityWarning) {
+            const timer = setTimeout(() => setSecurityWarning(''), 3000);
+            return () => clearTimeout(timer);
+        }
+    }, [securityWarning]);
 
     useEffect(() => {
         const fetchCourseContent = async () => {
@@ -157,27 +189,30 @@ const LearningPage = () => {
         return map;
     }, [enrollmentProgress]);
 
-    const syncVideoProgress = async ({ force = false, accessed = false, ended = false } = {}) => {
-        if (!activeVideo?._id || !activeVideo?.moduleId) return;
-        if (!videoRef.current) return;
+    const syncVideoProgress = async ({ force = false, accessed = false, ended = false, progressData = null } = {}) => {
+        // Guard: Ensure we have all required IDs for the backend updateVideoProgress
+        const courseId = id;
+        const moduleId = activeVideo?.moduleId;
+        const videoId = activeVideo?._id;
+
+        if (!courseId || !moduleId || !videoId || activeVideo.type === 'quiz') return;
 
         const now = Date.now();
         if (!force && now - lastSyncAtRef.current < 5000) return;
         lastSyncAtRef.current = now;
 
-        const duration = Number(videoRef.current.duration || videoDuration || 0);
-        const currentTime = Number(videoRef.current.currentTime || 0);
+        const duration = progressData?.duration || 0;
+        const currentTime = progressData?.currentTime || 0;
         const watchedDuration = Math.max(watchedSeconds, maxPlayedRef.current, ended ? duration : 0);
 
         try {
             const { data } = await api.post('/student/video/progress', {
-                courseId: id,
-                moduleId: activeVideo.moduleId,
-                videoId: activeVideo._id,
+                courseId,
+                moduleId,
+                videoId,
                 watchedDuration,
                 totalDuration: duration,
                 currentTime,
-                playbackRate,
                 accessed
             });
 
@@ -199,7 +234,34 @@ const LearningPage = () => {
     };
 
     const handleVideoSelect = (video) => {
-        // Upsell Check
+        // Strict Sequential Completion Logic
+        const completedVideosList = [
+            ...(enrollmentProgress?.completedVideos || []),
+            ...((enrollmentProgress?.videoProgress || []).filter((row) => row.completed).map((row) => row.videoId))
+        ].map(String);
+
+        // Find first incomplete item in playlist
+        const firstIncompleteIdx = playlist.findIndex(item => {
+            if (item.type === 'video') {
+                return !completedVideosList.includes(String(item._id));
+            }
+            if (item.type === 'quiz') {
+                const quizId = item.quizId?._id || item.quizId;
+                const quizResult = enrollmentProgress?.quizAttempts?.find(a => String(a.quizId) === String(quizId));
+                return !quizResult?.passed;
+            }
+            return false;
+        });
+
+        const videoIndex = playlist.findIndex(v => String(v._id) === String(video._id));
+
+        // Block if user tries to skip ahead past the first incomplete item
+        if (firstIncompleteIdx !== -1 && videoIndex > firstIncompleteIdx) {
+            setSecurityWarning(`Access Locked: Please complete ${playlist[firstIncompleteIdx].title} before moving forward.`);
+            return;
+        }
+
+        // Upsell Check (existing logic)
         if (courseData?.upsell?.isEnabled && (courseData.type === 'free' || courseData.type === 'certification')) {
             const videoIndex = playlist.findIndex(v => v._id === video._id);
             const triggerLimit = courseData.upsell.triggerCondition || 2;
@@ -220,51 +282,12 @@ const LearningPage = () => {
 
         setActiveVideo(video);
         setWatchedSeconds(0);
-        setVideoDuration(0);
         maxPlayedRef.current = 0;
         lastSyncAtRef.current = 0;
-        setPlaybackRate(1);
-    };
-
-    const handleTimeUpdate = () => {
-        const player = videoRef.current;
-        if (!player) return;
-
-        const current = Number(player.currentTime || 0);
-        const duration = Number(player.duration || 0);
-
-        if (duration > 0 && current > maxPlayedRef.current + 2) {
-            player.currentTime = maxPlayedRef.current;
-            return;
-        }
-
-        if (current > maxPlayedRef.current) {
-            maxPlayedRef.current = current;
-            setWatchedSeconds(maxPlayedRef.current);
-        }
-
-        if (duration > 0 && duration !== videoDuration) {
-            setVideoDuration(duration);
-        }
-
-        syncVideoProgress({ force: false, accessed: false, ended: false });
-    };
-
-    const handlePlaybackRateChange = (rate) => {
-        setPlaybackRate(rate);
-        if (videoRef.current) {
-            videoRef.current.playbackRate = rate;
-        }
     };
 
     const rawVideoUrl = activeVideo?.url || activeVideo?.videoUrl || '';
     const playableVideoUrl = resolveVideoUrl(rawVideoUrl);
-
-    useEffect(() => {
-        if (playableVideoUrl) {
-            console.log('Resolved video URL:', playableVideoUrl);
-        }
-    }, [playableVideoUrl]);
 
     useEffect(() => {
         if (activeVideo?._id && activeVideo?.moduleId) {
@@ -289,63 +312,7 @@ const LearningPage = () => {
         return () => {
             syncVideoProgress({ force: true, accessed: false, ended: false });
         };
-    }, [activeVideo?._id, watchedSeconds, playbackRate]);
-
-    useEffect(() => {
-        let timeout;
-        const handleMouseMove = () => {
-            setShowControls(true);
-            clearTimeout(timeout);
-            if (isPlaying) {
-                timeout = setTimeout(() => setShowControls(false), 3000);
-            }
-        };
-        
-        const container = playerContainerRef.current;
-        if (container) {
-            container.addEventListener('mousemove', handleMouseMove);
-        }
-        return () => {
-            if (container) container.removeEventListener('mousemove', handleMouseMove);
-            clearTimeout(timeout);
-        };
-    }, [isPlaying]);
-
-    useEffect(() => {
-        const handleFsChange = () => setIsFullscreen(!!document.fullscreenElement);
-        document.addEventListener('fullscreenchange', handleFsChange);
-        return () => document.removeEventListener('fullscreenchange', handleFsChange);
-    }, []);
-
-    const toggleFullscreen = () => {
-        if (!playerContainerRef.current) return;
-        if (!document.fullscreenElement) {
-            playerContainerRef.current.requestFullscreen().catch(err => {
-                console.error(`Fullscreen error: ${err.message}`);
-            });
-        } else {
-            document.exitFullscreen();
-        }
-    };
-
-    const togglePlay = () => {
-        if (!videoRef.current) return;
-        if (videoRef.current.paused) {
-            videoRef.current.play();
-            setIsPlaying(true);
-        } else {
-            videoRef.current.pause();
-            setIsPlaying(false);
-        }
-    };
-
-    const formatTime = (seconds) => {
-        const h = Math.floor(seconds / 3600);
-        const m = Math.floor((seconds % 3600) / 60);
-        const s = Math.floor(seconds % 60);
-        if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-        return `${m}:${s.toString().padStart(2, '0')}`;
-    };
+    }, [activeVideo?._id, watchedSeconds]);
 
     if (loading) return <div className="p-8 text-center">Loading course content...</div>;
     if (!courseData) return <div className="p-8 text-center text-red-500">Course not found or access denied.</div>;
@@ -360,7 +327,7 @@ const LearningPage = () => {
         <div className="flex flex-col lg:flex-row h-[calc(100vh-8rem)] gap-6">
             {/* Left Panel: Video Player */}
             <div className="flex-1 flex flex-col min-w-0">
-                <div className="aspect-video bg-black rounded-xl overflow-hidden shadow-lg relative flex items-center justify-center">
+                <div className="aspect-video bg-black rounded-xl overflow-hidden shadow-lg relative">
                     {activeVideo ? (
                         activeVideo.type === 'quiz' ? (
                             <div className="w-full h-full flex flex-col items-center justify-center bg-slate-900 text-white p-6 text-center">
@@ -372,213 +339,48 @@ const LearningPage = () => {
                                 <Button
                                     size="lg"
                                     className="bg-blue-600 hover:bg-blue-700 px-10 py-6 text-lg font-bold rounded-xl shadow-xl shadow-blue-900/20"
-                                    onClick={() => navigate(`/student/quizzes/${id}`)}
+                                    onClick={() => navigate(`/student/quizzes/${id}/${activeVideo.quizId?._id || activeVideo.quizId}`)}
                                 >
                                     Start Quiz <Icon name="ChevronRight" size={20} className="ml-2" />
                                 </Button>
                             </div>
                         ) : isDirectVideoFile(playableVideoUrl) ? (
-                            <div 
-                                ref={playerContainerRef}
-                                className={`w-full bg-black rounded-xl overflow-hidden shadow-2xl relative flex flex-col group/player ${isFullscreen ? 'h-screen rounded-none' : 'aspect-video'}`}
-                            >
-                                <div className="flex-1 relative min-h-0 bg-black flex items-center justify-center">
-                                    <video
-                                        ref={videoRef}
-                                        key={activeVideo._id}
-                                        className="w-full h-full object-contain cursor-pointer"
-                                        src={playableVideoUrl}
-                                        onContextMenu={(e) => e.preventDefault()}
-                                        preload="metadata"
-                                        onLoadStart={() => setVideoLoading(true)}
-                                        onCanPlay={() => setVideoLoading(false)}
-                                        onWaiting={() => setVideoLoading(true)}
-                                        onPlaying={() => {
-                                            setVideoLoading(false);
-                                            setIsPlaying(true);
+                            <>
+                                <VideoPlayer
+                                    key={activeVideo._id}
+                                    src={playableVideoUrl}
+                                    maxPlayed={watchedSeconds}
+                                    onProgress={(data) => {
+                                        if (data.maxPlayed > maxPlayedRef.current) {
+                                            maxPlayedRef.current = data.maxPlayed;
+                                            setWatchedSeconds(data.maxPlayed);
+                                        }
+                                        syncVideoProgress({ progressData: data });
+                                    }}
+                                    onEnded={() => {
+                                        syncVideoProgress({ force: true, accessed: false, ended: true });
+                                    }}
+                                />
+
+                                {securityWarning && (
+                                    <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-red-600/90 text-white px-4 py-2 rounded-full text-sm font-bold shadow-2xl z-50 animate-bounce">
+                                        {securityWarning}
+                                    </div>
+                                )}
+
+                                {/* Module Navigation Overlays */}
+                                <div className="absolute bottom-20 right-6 flex items-center gap-2 pointer-events-none opacity-0 group-hover/vidplayer:opacity-100 transition-opacity z-50">
+                                    <button 
+                                        className="p-2 px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-[11px] font-black flex items-center gap-2 transition-all shadow-2xl pointer-events-auto uppercase tracking-wider"
+                                        onClick={() => {
+                                            const idx = playlist.findIndex(v => v._id === activeVideo._id);
+                                            if (idx < playlist.length - 1) handleVideoSelect(playlist[idx + 1]);
                                         }}
-                                        onPause={() => setIsPlaying(false)}
-                                        onLoadedMetadata={() => {
-                                            if (videoRef.current) {
-                                                setVideoDuration(Number(videoRef.current.duration || 0));
-                                                videoRef.current.playbackRate = playbackRate;
-                                            }
-                                        }}
-                                        onTimeUpdate={handleTimeUpdate}
-                                        onEnded={() => {
-                                            syncVideoProgress({ force: true, accessed: false, ended: true });
-                                            setIsPlaying(false);
-                                        }}
-                                        onClick={togglePlay}
                                     >
-                                        Your browser does not support the video tag.
-                                    </video>
-
-                                    {/* Center Play/Pause Indicator (Large) */}
-                                    <div 
-                                        className={`absolute inset-0 flex items-center justify-center pointer-events-none transition-opacity duration-300 ${!isPlaying ? 'opacity-100' : 'opacity-0'}`}
-                                    >
-                                        <button 
-                                            className="w-20 h-20 bg-blue-600/80 rounded-full flex items-center justify-center text-white backdrop-blur-sm pointer-events-auto"
-                                            onClick={togglePlay}
-                                        >
-                                            <Icon name={isPlaying ? "Pause" : "Play"} size={32} className={!isPlaying ? "ml-1" : ""} />
-                                        </button>
-                                    </div>
-
-                                    {videoLoading && (
-                                        <div className="absolute inset-0 flex items-center justify-center bg-black/40 z-20 pointer-events-none">
-                                            <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-                                        </div>
-                                    )}
+                                        NEXT MODULE <Icon name="SkipForward" size={14} fill="currentColor" />
+                                    </button>
                                 </div>
-
-                                {/* Custom Control Bar - REDESIGNED FOR VISIBILITY */}
-                                <div className={`absolute bottom-0 left-0 right-0 bg-black/70 backdrop-blur-md border-t border-white/10 transition-all duration-300 p-3 z-30 ${!showControls && isPlaying ? 'opacity-0 translate-y-4 pointer-events-none' : 'opacity-100 translate-y-0 pointer-events-auto'}`}>
-                                    {/* Scrubber at the top of the bar */}
-                                    <div className="relative w-full h-1 group/scrubber mb-3 cursor-pointer">
-                                        <input 
-                                            type="range"
-                                            min="0"
-                                            max={videoDuration || 0}
-                                            value={watchedSeconds}
-                                            onChange={(e) => {
-                                                const time = Number(e.target.value);
-                                                if (videoRef.current) videoRef.current.currentTime = time;
-                                            }}
-                                            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                                        />
-                                        <div className="absolute inset-0 bg-white/20 rounded-full"></div>
-                                        <div 
-                                            className="absolute inset-y-0 left-0 bg-blue-500 rounded-full transition-all"
-                                            style={{ width: `${(watchedSeconds / (videoDuration || 1)) * 100}%` }}
-                                        ></div>
-                                        <div 
-                                            className="absolute top-1/2 -translate-y-1/2 h-3 w-3 bg-white rounded-full shadow-lg opacity-0 group-hover/scrubber:opacity-100 transition-opacity"
-                                            style={{ left: `${(watchedSeconds / (videoDuration || 1)) * 100}%` }}
-                                        ></div>
-                                    </div>
-
-                                    <div className="flex items-center justify-between gap-2">
-                                        <div className="flex items-center gap-2">
-                                            <button onClick={togglePlay} className="text-white hover:text-blue-400 transition-colors">
-                                                <Icon name={isPlaying ? "Pause" : "Play"} size={22} fill="currentColor" />
-                                            </button>
-
-                                            <div className="flex items-center gap-0.5">
-                                                <button 
-                                                    className="p-1 text-white/70 hover:text-white flex flex-col items-center min-w-[32px]"
-                                                    onClick={() => { if(videoRef.current) videoRef.current.currentTime -= 10; }}
-                                                    title="Back 10s"
-                                                >
-                                                    <Icon name="RotateCcw" size={14} />
-                                                    <span className="text-[8px] font-black leading-none mt-0.5 uppercase">10S</span>
-                                                </button>
-                                                <button 
-                                                    className="p-1 text-white/70 hover:text-white flex flex-col items-center min-w-[32px]"
-                                                    onClick={() => { if(videoRef.current) videoRef.current.currentTime -= 5; }}
-                                                    title="Back 5s"
-                                                >
-                                                    <Icon name="History" size={14} />
-                                                    <span className="text-[8px] font-black leading-none mt-0.5 uppercase">5S</span>
-                                                </button>
-                                                <button 
-                                                    className="p-1 text-white/70 hover:text-white flex flex-col items-center min-w-[32px]"
-                                                    onClick={() => { if(videoRef.current) videoRef.current.currentTime += 5; }}
-                                                    title="Forward 5s"
-                                                >
-                                                    <Icon name="ChevronRight" size={14} />
-                                                    <span className="text-[8px] font-black leading-none mt-0.5 uppercase">5S</span>
-                                                </button>
-                                                <button 
-                                                    className="p-1 text-white/70 hover:text-white flex flex-col items-center min-w-[32px]"
-                                                    onClick={() => { if(videoRef.current) videoRef.current.currentTime += 10; }}
-                                                    title="Forward 10s"
-                                                >
-                                                    <Icon name="RotateCw" size={14} />
-                                                    <span className="text-[8px] font-black leading-none mt-0.5 uppercase">10S</span>
-                                                </button>
-                                            </div>
-
-                                            <div className="flex items-center gap-1.5 group/volume ml-1">
-                                                <button 
-                                                    onClick={() => {
-                                                        const m = !isMuted;
-                                                        setIsMuted(m);
-                                                        if (videoRef.current) videoRef.current.muted = m;
-                                                    }}
-                                                    className="text-white/80 hover:text-white"
-                                                >
-                                                    <Icon name={isMuted || volume === 0 ? "VolumeX" : volume < 0.5 ? "Volume1" : "Volume2"} size={18} />
-                                                </button>
-                                                <input 
-                                                    type="range"
-                                                    min="0"
-                                                    max="1"
-                                                    step="0.05"
-                                                    value={isMuted ? 0 : volume}
-                                                    onChange={(e) => {
-                                                        const v = Number(e.target.value);
-                                                        setVolume(v);
-                                                        setIsMuted(v === 0);
-                                                        if (videoRef.current) {
-                                                            videoRef.current.volume = v;
-                                                            videoRef.current.muted = v === 0;
-                                                        }
-                                                    }}
-                                                    className="w-0 group-hover/volume:w-16 transition-all duration-300 accent-blue-500 h-1 cursor-pointer opacity-0 group-hover/volume:opacity-100"
-                                                />
-                                            </div>
-
-                                            <div className="text-[10px] font-mono font-bold text-white/80 border-l border-white/10 pl-2">
-                                                {formatTime(watchedSeconds)} <span className="text-white/20">/</span> {formatTime(videoDuration)}
-                                            </div>
-                                        </div>
-
-                                        <div className="flex items-center gap-2">
-                                            <div className="flex items-center gap-1 border-l border-white/10 pl-2">
-                                                <button 
-                                                    className="p-1.5 text-white/60 hover:text-white transition-colors"
-                                                    onClick={() => {
-                                                        const idx = playlist.findIndex(v => v._id === activeVideo._id);
-                                                        if (idx > 0) handleVideoSelect(playlist[idx - 1]);
-                                                    }}
-                                                    title="Prev Module"
-                                                >
-                                                    <Icon name="SkipBack" size={16} />
-                                                </button>
-                                                <button 
-                                                    className="p-1.5 px-3 bg-blue-600 hover:bg-blue-700 text-white rounded text-[10px] font-black flex items-center gap-1.5 transition-all shadow-lg shadow-blue-900/40 uppercase"
-                                                    onClick={() => {
-                                                        const idx = playlist.findIndex(v => v._id === activeVideo._id);
-                                                        if (idx < playlist.length - 1) handleVideoSelect(playlist[idx + 1]);
-                                                    }}
-                                                >
-                                                    NEXT <Icon name="SkipForward" size={12} fill="currentColor" />
-                                                </button>
-                                            </div>
-
-                                            <div className="flex items-center gap-2 border-l border-white/10 pl-2">
-                                                <div className="flex flex-col items-center">
-                                                    <select
-                                                        className="bg-transparent border-none text-[10px] font-bold text-blue-400 outline-none cursor-pointer hover:text-white appearance-none h-4"
-                                                        value={playbackRate}
-                                                        onChange={(e) => handlePlaybackRateChange(Number(e.target.value))}
-                                                    >
-                                                        <option value={1}>1X</option>
-                                                        <option value={1.5}>1.5X</option>
-                                                        <option value={2}>2X</option>
-                                                    </select>
-                                                    <span className="text-[5px] text-white/30 font-black tracking-widest leading-none">SPEED</span>
-                                                </div>
-                                                <button onClick={toggleFullscreen} className="text-white/70 hover:text-white transition-all hover:scale-110 ml-1">
-                                                    <Icon name={isFullscreen ? "Minimize" : "Maximize"} size={18} />
-                                                </button>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
+                            </>
                         ) : (
                             <iframe
                                 className="w-full h-full"
@@ -626,25 +428,42 @@ const LearningPage = () => {
                             <TabsContent value="overview" className="py-4 text-slate-600">
                                 {activeVideo?.description || courseData.description}
                                 {progressSummary?.moduleProgress?.length > 0 && (
-                                    <div className="mt-4 rounded-lg border border-slate-100 bg-slate-50 p-4">
-                                        <p className="text-sm font-semibold text-slate-800 mb-2">Module Completion</p>
-                                        <div className="space-y-2">
-                                            {progressSummary.moduleProgress.map((module) => (
-                                                <div key={module.moduleIndex} className="flex items-center justify-between text-xs">
-                                                    <span className="text-slate-700">{module.title}</span>
-                                                    <span className={module.status === 'completed' ? 'text-green-600 font-semibold' : 'text-amber-600 font-semibold'}>
-                                                        {module.status === 'completed' ? 'Completed' : 'Pending'}
-                                                    </span>
+                                    <div className="mt-8">
+                                        <h3 className="text-lg font-bold text-slate-900 mb-4">Module Completion Status</h3>
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                            {progressSummary.moduleProgress.map((mod, idx) => (
+                                                <div key={idx} className="p-4 rounded-xl border border-slate-200 bg-white shadow-sm flex flex-col gap-3">
+                                                    <div className="flex justify-between items-start">
+                                                        <div className="flex-1 min-w-0">
+                                                            <p className="text-sm font-bold text-slate-900 truncate">Module {mod.moduleIndex + 1}: {mod.title}</p>
+                                                            <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">{mod.completedItems}/{mod.totalItems} Items Completed</p>
+                                                        </div>
+                                                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${mod.status === 'completed' ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>
+                                                            {mod.status === 'completed' ? 'Passed' : 'In Progress'}
+                                                        </span>
+                                                    </div>
+                                                    <ProgressBar value={mod.completionPercentage} className="h-1.5" />
+                                                    <div className="flex gap-4 text-[10px] text-slate-500 font-medium">
+                                                        <div className="flex items-center gap-1">
+                                                            <Icon name="Play" size={10} className={mod.completedVideos >= mod.videoIds?.length ? 'text-green-500' : ''} />
+                                                            {mod.completedVideos} Videos
+                                                        </div>
+                                                        <div className="flex items-center gap-1">
+                                                            <Icon name="HelpCircle" size={10} className={mod.completedQuizzes >= mod.quizIds?.length ? 'text-green-500' : ''} />
+                                                            {mod.completedQuizzes} Quizzes
+                                                        </div>
+                                                    </div>
                                                 </div>
                                             ))}
                                         </div>
                                     </div>
                                 )}
-                                {activeVideo && !completedVideos.includes(String(activeVideo._id)) && (
-                                    <p className="mt-4 text-xs text-amber-600 font-medium">
-                                        Watch at least 95% of this video to mark the module as completed.
-                                    </p>
-                                )}
+                            </TabsContent>
+                            <TabsContent value="notes" className="py-4 text-slate-600">
+                                <p>Personal notes feature is coming soon.</p>
+                            </TabsContent>
+                            <TabsContent value="resources" className="py-4 text-slate-600">
+                                <p>Course resources and handouts will appear here.</p>
                             </TabsContent>
                         </Tabs>
                     </div>
@@ -661,19 +480,27 @@ const LearningPage = () => {
                 </div>
 
                 <div className="flex-1 overflow-y-auto p-4 space-y-3">
-                    {playlist.map((item, index) => (
-                        <VideoCard
-                            key={item._id}
-                            id={item._id}
-                            title={`${item.title}`}
-                            subtitle={`Module ${item.moduleIndex}: ${item.moduleTitle}`}
-                            duration={item.type === 'quiz' ? 'Assessment' : (item.duration || '00:00')}
-                            isCompleted={item.type === 'video' ? completedVideos.includes(String(item._id)) : false}
-                            isActive={activeVideo?._id === item._id}
-                            icon={item.type === 'quiz' ? 'HelpCircle' : 'Play'}
-                            onClick={() => handleVideoSelect(item)}
-                        />
-                    ))}
+                    {playlist.map((item, index) => {
+                        const isQuiz = item.type === 'quiz';
+                        const quizId = item.quizId?._id || item.quizId;
+                        const hasPassedQuiz = isQuiz && enrollmentProgress?.quizAttempts?.some(
+                            a => String(a.quizId) === String(quizId) && a.passed
+                        );
+
+                        return (
+                            <VideoCard
+                                key={item._id}
+                                id={item._id}
+                                title={`${item.title}`}
+                                subtitle={`Module ${item.moduleIndex}: ${item.moduleTitle}`}
+                                duration={isQuiz ? 'Assessment' : (item.duration || '00:00')}
+                                isCompleted={isQuiz ? hasPassedQuiz : completedVideos.includes(String(item._id))}
+                                isActive={activeVideo?._id === item._id}
+                                icon={isQuiz ? 'HelpCircle' : 'Play'}
+                                onClick={() => handleVideoSelect(item)}
+                            />
+                        );
+                    })}
                 </div>
 
                 <div className="p-4 border-t border-slate-100 bg-slate-50">
@@ -705,11 +532,17 @@ const LearningPage = () => {
                             </div>
                         </div>
                     )}
-                    {courseData.quizzes?.length > 0 || courseData.modules?.some(m => m.content?.some(c => c.type === 'quiz')) ? (
+                    {/* Global Quiz Button */}
+                    {(courseData.quizzes?.length > 0 || playlist.some(i => i.type === 'quiz')) ? (
                         <Button
                             variant="outline"
                             className="w-full mb-2"
-                            onClick={() => navigate(`/student/quizzes/${id}`)}
+                            onClick={() => {
+                                const firstQuiz = playlist.find(i => i.type === 'quiz');
+                                const quizId = firstQuiz?.quizId?._id || firstQuiz?.quizId || courseData.quizzes?.[0]?._id;
+                                if (quizId) navigate(`/student/quizzes/${id}/${quizId}`);
+                                else navigate(`/student/quizzes/${id}`);
+                            }}
                         >
                             Take Course Quiz
                         </Button>

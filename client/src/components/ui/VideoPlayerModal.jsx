@@ -1,5 +1,6 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect } from 'react';
 import { Icon } from '@/components/ui/Icon';
+import { VideoPlayer } from '@/components/ui/VideoPlayer';
 
 /**
  * VideoPlayerModal
@@ -9,7 +10,6 @@ import { Icon } from '@/components/ui/Icon';
  *   onClose  – called when the user closes the modal
  */
 const VideoPlayerModal = ({ url, title = 'Video Preview', onClose }) => {
-    const videoRef = useRef(null);
 
     // Resolve URL: If it starts with /api, prepend the backend host and append the auth token
     const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api';
@@ -27,13 +27,6 @@ const VideoPlayerModal = ({ url, title = 'Video Preview', onClose }) => {
         document.addEventListener('keydown', handleKey);
         return () => document.removeEventListener('keydown', handleKey);
     }, [onClose]);
-
-    // Pause video when modal closes
-    useEffect(() => {
-        return () => {
-            if (videoRef.current) videoRef.current.pause();
-        };
-    }, []);
 
     return (
         <div
@@ -59,20 +52,13 @@ const VideoPlayerModal = ({ url, title = 'Video Preview', onClose }) => {
                 {/* Player */}
                 <div className="relative w-full bg-black" style={{ aspectRatio: '16/9' }}>
                     {url ? (
-                        <video
-                            ref={videoRef}
+                        <VideoPlayer
                             src={resolvedUrl}
-                            controls
-                            autoPlay
-                            crossOrigin="anonymous"
+                            title={title}
+                            autoPlay={true}
+                            restrictSeeking={false}
                             className="w-full h-full"
-                            style={{ maxHeight: '75vh' }}
-                            onError={() => console.error('Video failed to load:', url)}
-                        >
-                            <p className="text-white text-center p-8">
-                                Your browser does not support HTML5 video.
-                            </p>
-                        </video>
+                        />
                     ) : (
                         <div className="flex items-center justify-center h-full text-slate-400 p-12">
                             <div className="text-center space-y-2">

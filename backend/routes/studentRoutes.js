@@ -13,7 +13,8 @@ const {
     downloadCertificate,
     getMyInternshipDocuments,
     downloadInternshipCertificate,
-    proxyVideo
+    proxyVideo,
+    getQuizDetails
 } = require('../controllers/studentController');
 const { protect } = require('../middlewares/authMiddleware');
 const { studentOnly } = require('../middlewares/roleMiddleware');
@@ -36,6 +37,7 @@ router.get('/course/:id', courseAccess, getCourseDetails);
 router.post('/video/progress', courseAccess, updateVideoProgress);
 router.post('/video/complete', courseAccess, completeVideo);
 router.post('/quiz/submit', courseAccess, submitQuiz);
+router.get('/quiz/:courseId/:quizId', courseAccess, getQuizDetails);
 router.get('/video/stream/:courseId/:moduleId/:videoId', proxyVideo);
 
 module.exports = router;

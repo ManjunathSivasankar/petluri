@@ -8,7 +8,7 @@ const { issueCertificate } = require('../services/certificateService');
 const { issueInternshipCertificate } = require('../services/internshipDocumentService');
 const { getSignedDownloadUrl, streamVideoFile } = require('../services/videoStorageService');
 
-const VIDEO_COMPLETION_THRESHOLD = 0.95;
+const VIDEO_COMPLETION_THRESHOLD = 0.99; // Require 99% for full completion
 
 const getCompletedVideoSet = (enrollment) => {
     const completed = new Set((enrollment.progress?.completedVideos || []).map(String));
@@ -97,8 +97,9 @@ const getCourseItems = (course) => {
 
         (mod.content || []).forEach((item) => {
             if (item.type === 'video') {
-                moduleVideoIds.push(String(item._id));
-                videoIds.add(String(item._id));
+                const vidId = String(item._id || item.videoId);
+                moduleVideoIds.push(vidId);
+                videoIds.add(vidId);
             }
             if (item.type === 'quiz' && item.quizId) {
                 const quizId = String(item.quizId._id || item.quizId);
@@ -170,11 +171,14 @@ const syncEnrollmentProgress = (enrollment, course) => {
     const summary = buildProgressSummary(course, enrollment);
     enrollment.completionPercentage = summary.completionPercentage;
 
-    if (summary.completionPercentage === 100) {
+    // Strict validation: Must have 100% completion (all videos watched AND all quizzes passed)
+    if (summary.completionPercentage === 100 && summary.pendingModules === 0) {
         enrollment.status = 'completed';
-    } else if (enrollment.status === 'enrolled' || enrollment.status === 'completed') {
-        enrollment.status = 'pending';
-        enrollment.certificateIssued = false;
+    } else {
+        // If they drop below 100% (e.g. new content added), revert status
+        if (enrollment.status === 'completed') {
+            enrollment.status = 'enrolled';
+        }
     }
 
     return summary;
@@ -569,14 +573,20 @@ const submitQuiz = async (req, res) => {
         const passThreshold = Math.max(50, requiredPassingScore);
         const passed = score >= passThreshold;
 
+        // Force course fetch to evaluate module structure accurately
+        const course = await Course.findById(courseId);
+        if (!course) {
+            return res.status(404).json({ message: 'Course not found' });
+        }
+
         const enrollment = await Enrollment.findOne({ userId: req.user._id, courseId });
         if (!enrollment) {
             return res.status(404).json({ message: 'Enrollment not found' });
         }
 
         enrollment.progress = enrollment.progress || {};
-        enrollment.progress.completedVideos = enrollment.progress.completedVideos || [];
         enrollment.progress.quizAttempts = enrollment.progress.quizAttempts || [];
+        enrollment.progress.completedVideos = enrollment.progress.completedVideos || [];
 
         enrollment.progress.quizAttempts.push({
             quizId,
@@ -588,10 +598,15 @@ const submitQuiz = async (req, res) => {
             attemptedAt: new Date()
         });
 
-        const course = await Course.findById(courseId);
         const summary = syncEnrollmentProgress(enrollment, course);
 
-        if (summary.completionPercentage === 100 && !enrollment.certificateIssued) {
+        // SECURE CERTIFICATION LOGIC: 
+        // 1. All modules MUST be completed (videos watched + quizzes passed)
+        // 2. Completion percentage MUST be 100%
+        // 3. No certificate issue if any of above conditions not met
+        const isCourseFullyCompleted = summary.completionPercentage === 100 && summary.pendingModules === 0;
+
+        if (isCourseFullyCompleted && !enrollment.certificateIssued) {
             try {
                 await issueCompletionDocument(req.user._id, courseId);
                 enrollment.certificateIssued = true;
@@ -610,6 +625,7 @@ const submitQuiz = async (req, res) => {
             correctAnswers,
             enrollment,
             progressSummary: summary,
+            courseCompleted: isCourseFullyCompleted,
             quizResults: getQuizResultSummary(enrollment)
         });
     } catch (error) {
@@ -854,6 +870,42 @@ const proxyVideo = async (req, res) => {
     }
 };
 
+// @desc    Get Specific Quiz Details
+// @route   GET /api/student/quiz/:courseId/:quizId
+// @access  Private/Student
+const getQuizDetails = async (req, res) => {
+    try {
+        const { courseId, quizId } = req.params;
+        console.log('GET Quiz Details Request:', { courseId, quizId, userId: req.user._id });
+
+        // Check if directly finding by ID works first
+        const quiz = await Quiz.findById(quizId);
+        if (!quiz) {
+            console.log('Quiz DB check failed for ID:', quizId);
+            return res.status(404).json({ message: 'Quiz not found' });
+        }
+
+        // Check enrollment
+        const enrollment = await Enrollment.findOne({
+            userId: req.user._id,
+            courseId
+        });
+
+        if (!enrollment) {
+            console.log('Enrollment not found for access:', { userId: req.user._id, courseId });
+            // For debugging, we can be more lenient temporarily if needed, 
+            // but let's keep security and just log.
+            return res.status(403).json({ message: 'Not enrolled in this course' });
+        }
+
+        console.log('Returning quiz:', quiz._id, quiz.title);
+        res.json({ quiz });
+    } catch (error) {
+        console.error('Quiz Details Error:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
 module.exports = {
     getDashboard,
     getMyCourses,
@@ -867,5 +919,6 @@ module.exports = {
     downloadCertificate,
     getMyInternshipDocuments,
     downloadInternshipCertificate,
-    proxyVideo
+    proxyVideo,
+    getQuizDetails
 };

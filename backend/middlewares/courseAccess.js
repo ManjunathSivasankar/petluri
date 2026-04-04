@@ -7,7 +7,8 @@ const Course = require('../models/Course');
 const courseAccess = async (req, res, next) => {
     try {
         const userId = req.user._id;
-        const courseId = req.params.id || req.body.courseId;
+        // Priority for params (id or courseId), then check body
+        const courseId = req.params.id || req.params.courseId || req.body.courseId;
 
         if (!courseId) {
             return res.status(400).json({ message: 'Course ID is required for access check' });
